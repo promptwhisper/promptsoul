@@ -1,0 +1,28 @@
+name: Private contact request
+description: 仅在私密报告入口不可用时，请求维护者提供私下联系方式；不要填写事件细节。
+title: "[Private contact request]"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        此 Issue 会公开显示。请不要填写漏洞、行为事件、API Key、个人信息、日志、利用步骤或受限素材。
+        你只需要提交下面的确认，维护者会提供适当的私密联系渠道。
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: 联系类别
+      options:
+        - Security report
+        - Code of Conduct report
+        - Other sensitive maintainer contact
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: acknowledgement
+    attributes:
+      label: 确认
+      options:
+        - label: 我确认此公开 Issue 不包含任何事件细节、凭据、个人信息或受限素材。
+          required: true

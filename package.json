@@ -1,0 +1,53 @@
+{
+  "name": "promptsoul",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Local-first AI Live2D NPC with safe prompt-to-motion generation",
+  "license": "MIT",
+  "keywords": [
+    "live2d",
+    "ai-npc",
+    "nextjs",
+    "typescript",
+    "self-hosted",
+    "motion-generation"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "next dev --hostname 127.0.0.1 --port 8765",
+    "build": "next build --webpack",
+    "start": "next start --hostname 127.0.0.1 --port 8765",
+    "check:repo": "tsx scripts/check-repository.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests-node/*.test.ts",
+    "verify": "npm run check:repo && npm run typecheck && npm test && node --check assets/app.js && npm run build",
+    "verify:browser": "tools/verify_browser.sh",
+    "setup:demo": "tsx scripts/setup-demo.ts",
+    "setup:model": "tsx scripts/setup-model.ts",
+    "analyze:model": "tsx scripts/analyze-model.ts",
+    "motions:generate": "tsx scripts/gen-motions.ts",
+    "motions:validate": "tsx scripts/validate-motions.ts"
+  },
+  "dependencies": {
+    "next": "16.2.10",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "tsx": "4.23.1",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "postcss": "8.5.10"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "fsevents@2.3.3": true,
+    "sharp@0.34.5": true
+  }
+}

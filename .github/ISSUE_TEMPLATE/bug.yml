@@ -1,0 +1,66 @@
+name: Bug report
+description: 报告可复现的问题；不要上传 API Key 或受限模型。
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。安全漏洞请不要填写公开 Issue，请按 `SECURITY.md` 私下报告。
+        请对日志脱敏，不要上传真实 API Key、聊天记录、私有模型、纹理或没有可见署名的 Hiyori 截图。
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: 问题描述
+      description: 简洁说明实际发生了什么。
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 运行……
+        2. 打开……
+        3. 点击……
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境
+      description: 操作系统、Node/npm、浏览器、PromptSoul commit 或版本。不要包含用户名或本机绝对路径。
+      placeholder: |
+        OS:
+        Node:
+        npm:
+        Browser:
+        PromptSoul version/commit:
+    validations:
+      required: true
+
+  - type: textarea
+    id: sanitized-logs
+    attributes:
+      label: 已脱敏日志
+      description: 可选。删除 Key、个人数据、Provider 响应、模型路径和私有内容。
+      render: shell
+
+  - type: checkboxes
+    id: acknowledgements
+    attributes:
+      label: 确认
+      options:
+        - label: 我没有在此 Issue 中附上 API Key、个人聊天内容或授权受限模型。
+          required: true
+        - label: 这不是需要私下报告的安全漏洞。
+          required: true

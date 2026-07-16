@@ -1,0 +1,319 @@
+@import "../assets/styles.css";
+
+input,
+dialog {
+  font: inherit;
+}
+
+input:focus-visible,
+.provider-trigger:focus-visible,
+.provider-close:focus-visible,
+.provider-secret-field button:focus-visible,
+.provider-actions button:focus-visible {
+  outline: 2px solid var(--mint);
+  outline-offset: 3px;
+}
+
+.provider-trigger {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 14px;
+  border: 1px solid rgba(157, 116, 255, 0.28);
+  border-radius: 999px;
+  background: rgba(25, 23, 40, 0.82);
+  color: var(--muted-light);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 180ms ease, background 180ms ease, color 180ms ease;
+}
+
+.provider-trigger:hover {
+  border-color: rgba(157, 116, 255, 0.62);
+  background: rgba(49, 39, 81, 0.82);
+  color: var(--text);
+}
+
+.provider-trigger-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--amber);
+  box-shadow: 0 0 10px rgba(255, 200, 107, 0.55);
+}
+
+.provider-trigger-dot[data-active="true"] {
+  background: var(--mint);
+  box-shadow: 0 0 10px rgba(116, 241, 203, 0.68);
+}
+
+.provider-dialog {
+  width: min(560px, calc(100vw - 28px));
+  max-height: min(760px, calc(100dvh - 28px));
+  padding: 0;
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(157, 116, 255, 0.16), transparent 34%),
+    #12131d;
+  color: var(--text);
+  box-shadow: 0 32px 110px rgba(0, 0, 0, 0.68);
+}
+
+.provider-dialog::backdrop {
+  background: rgba(4, 5, 10, 0.72);
+  backdrop-filter: blur(10px);
+}
+
+.provider-form {
+  display: grid;
+  gap: 18px;
+  padding: 24px;
+}
+
+.provider-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.provider-dialog-head h2 {
+  margin: 5px 0 0;
+  font-size: clamp(20px, 4vw, 27px);
+  line-height: 1.2;
+  letter-spacing: -0.035em;
+}
+
+.provider-close {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.035);
+  cursor: pointer;
+}
+
+.provider-close svg {
+  width: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+
+.provider-intro {
+  margin: -4px 0 0;
+  color: var(--muted-light);
+  font-size: 13px;
+  line-height: 1.72;
+}
+
+.provider-current {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.provider-current > span {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--amber);
+  box-shadow: 0 0 12px rgba(255, 200, 107, 0.55);
+}
+
+.provider-current[data-active="true"] > span {
+  background: var(--mint);
+  box-shadow: 0 0 12px rgba(116, 241, 203, 0.62);
+}
+
+.provider-current div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.provider-current strong {
+  font-size: 13px;
+}
+
+.provider-current small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-field {
+  display: grid;
+  gap: 8px;
+  color: var(--muted-light);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.provider-field > input,
+.provider-secret-field {
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  border: 1px solid var(--line-strong);
+  border-radius: 13px;
+  background: rgba(8, 9, 15, 0.72);
+  color: var(--text);
+}
+
+.provider-field > input {
+  padding: 0 14px;
+  font-size: 16px;
+}
+
+.provider-field small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.55;
+}
+
+.provider-secret-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  padding-left: 14px;
+}
+
+.provider-secret-field:focus-within {
+  border-color: rgba(157, 116, 255, 0.72);
+}
+
+.provider-secret-field input {
+  width: 100%;
+  min-width: 0;
+  height: 46px;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 16px;
+}
+
+.provider-secret-field button {
+  min-width: 58px;
+  min-height: 44px;
+  margin: 1px;
+  border: 0;
+  border-left: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted-light);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.provider-notice {
+  min-height: 42px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--muted-light);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.provider-notice[data-state="success"] {
+  border-color: rgba(116, 241, 203, 0.3);
+  color: var(--mint);
+}
+
+.provider-notice[data-state="error"] {
+  border-color: rgba(255, 120, 138, 0.34);
+  color: #ffadb8;
+}
+
+.provider-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.provider-actions button {
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 760;
+  cursor: pointer;
+}
+
+.provider-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.provider-clear {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted-light);
+}
+
+.provider-save {
+  border: 0;
+  background: linear-gradient(135deg, #ad83ff, #6f4ce3);
+  color: #fff;
+  box-shadow: 0 12px 28px rgba(104, 68, 216, 0.3);
+}
+
+@media (max-width: 560px) {
+  .topbar-meta {
+    gap: 7px;
+  }
+
+  .provider-trigger {
+    width: 44px;
+    padding: 0;
+  }
+
+  .provider-trigger > span:last-child {
+    display: none;
+  }
+
+  .provider-form {
+    gap: 15px;
+    padding: 18px;
+  }
+
+  .provider-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .provider-actions button {
+    width: 100%;
+    padding-inline: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .provider-trigger {
+    transition: none;
+  }
+}

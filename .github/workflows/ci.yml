@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node:
+          - 22.x
+          - 24.x
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check publishable repository contents
+        run: npm run check:repo
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm test
+
+      - name: Check legacy browser runtime syntax
+        run: node --check assets/app.js
+
+      - name: Build application
+        run: npm run build
+
+      - name: Check whitespace errors
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.sha }}
+          PULL_REQUEST_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git diff --check "$PULL_REQUEST_BASE...$HEAD_SHA"
+          elif [ "$EVENT_NAME" = "push" ] && [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            git diff --check "$PUSH_BEFORE..$HEAD_SHA"
+          else
+            git show --check --format= "$HEAD_SHA"
+          fi
+
+      # Model generation and browser screenshots intentionally remain local:
+      # CI must not download Hiyori or accept Live2D terms for contributors.
