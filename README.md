@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./docs/images/promptsoul-banner.svg" width="100%" alt="PromptSoul gives local AI characters a visible soul through emotion-driven Live2D and safe motion generation">
+</p>
+
 # PromptSoul
 
 简体中文 · [English](README.en.md) · [日本語](README.ja.md)
@@ -6,7 +10,7 @@ PromptSoul 是一个前后端一体的 AI Live2D NPC 原型。用户发消息后
 
 > AI 不会直接修改网格、骨骼或 Cubism 绑定。所有动作都只能使用模型已有参数，并且只能注册到项目自有的 `PromptSoul` 动作组。
 
-![PromptSoul — AI Live2D NPC Lab](docs/images/promptsoul-banner.svg)
+**从这里开始：**[快速开始](#快速开始) · [接入 AI](#接入-ai) · [用提示词生成动作](#用提示词生成动作) · [更换模型](#更换-live2d-模型) · [安全边界](#安全说明)
 
 <sub>演示角色：Hiyori Momose ©Live2D；模型数据不包含在仓库中。</sub>
 

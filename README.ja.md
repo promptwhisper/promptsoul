@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./docs/images/promptsoul-banner.svg" width="100%" alt="PromptSoul は会話の感情を Live2D モーションへ結び付け、安全な動作生成を行うローカル AI NPC です">
+</p>
+
 # PromptSoul
 
 [简体中文](README.md) · [English](README.en.md) · 日本語
@@ -5,6 +9,8 @@
 > この日本語文書はクイックスタートの要約です。完全な機能、安全境界、モーション削除、検証手順は [English README](README.en.md) を参照してください。
 
 PromptSoul は、会話の感情を Live2D モーションに結び付ける、ローカル実行向けの AI NPC プロトタイプです。Next.js の画面と Node API を一つのプロジェクトに統合し、プロンプトから現在のモデルが安全に表現できるモーションも生成できます。
+
+**最初に読む:** [クイックスタート](#クイックスタート) · [AI Provider](#ai-provider) · [モデルの変更](#モデルの変更) · [ライセンス](#ライセンス)
 
 <sub>デモキャラクター: Hiyori Momose ©Live2D（モデルデータはリポジトリに含まれません）</sub>
 

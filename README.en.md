@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./docs/images/promptsoul-banner.svg" width="100%" alt="PromptSoul gives local AI characters a visible soul through emotion-driven Live2D and safe motion generation">
+</p>
+
 # PromptSoul
 
 [简体中文](README.md) · English · [日本語](README.ja.md)
@@ -6,7 +10,7 @@ PromptSoul is a local-first, self-hosted AI Live2D NPC prototype. A Next.js serv
 
 > The AI never edits meshes, rigging, or Cubism bindings. Generated actions may use only existing model parameters and may be registered only in the project-owned `PromptSoul` motion group.
 
-![PromptSoul — AI Live2D NPC Lab](docs/images/promptsoul-banner.svg)
+**Start here:** [Quick start](#quick-start) · [AI Provider](#ai-provider) · [Prompt-to-motion](#prompt-to-motion-generation) · [Use another model](#using-another-live2d-model) · [Security](#contributing-and-security)
 
 <sub>Demo character: Hiyori Momose ©Live2D. Model data is not included in this repository.</sub>
 
