@@ -7,6 +7,17 @@
   const MOTION_DELETE_ENDPOINT = (motionId) => `/api/motions/${encodeURIComponent(motionId)}`;
   const MOTION_REQUEST_TIMEOUT_MS = 120000;
   const MOTION_DELETE_TIMEOUT_MS = 30000;
+  const VOICE_SETTINGS_ENDPOINT = "/api/voice/settings";
+  const VOICE_SYNTHESIS_ENDPOINT = "/api/voice";
+  const VOICE_REQUEST_TIMEOUT_MS = 45000;
+  const MOUTH_PARAMETER_IDS = [
+    "ParamMouthOpenY",
+    "PARAM_MOUTH_OPEN_Y",
+    "MouthOpenY",
+    "ParamMouthOpen",
+    "PARAM_MOUTH_OPEN",
+    "MouthOpen",
+  ];
   const GENERATED_MOTION_ID_PATTERN = /^promptsoul_ai_[0-9a-f]{12}$/;
   const MOTION_REVISION_PATTERN = /^rev_[0-9a-f]{16}$/;
   const EMOTIONS = [
@@ -130,6 +141,17 @@
     workshopBusy: false,
     deletingMotionId: null,
     generatedMotion: null,
+    voiceEnabled: false,
+    voiceGeneration: 0,
+    voiceAudio: null,
+    voiceAudioUrl: null,
+    voiceContext: null,
+    voiceSource: null,
+    voiceAnalyser: null,
+    lipSyncSamples: null,
+    lipSyncValue: 0,
+    lipSyncResetPending: false,
+    lipSyncBinding: null,
   };
 
   function mergeConfig(remote) {
@@ -577,6 +599,7 @@
 
   function destroyCurrentLive2D() {
     clearActiveMotion();
+    uninstallLive2DLipSync();
     state.modelReady = false;
     dom.resetView.onclick = null;
     if (state.pixiApp) {
@@ -595,6 +618,72 @@
     state.model = null;
     state.layoutModel = null;
     state.userAdjusted = false;
+  }
+
+  function resolveMouthParameterIds(model) {
+    const configured = model?.internalModel?.settings?.getLipSyncParameters?.();
+    if (Array.isArray(configured)) {
+      const ids = configured.filter((parameterId) => (
+        typeof parameterId === "string" && parameterId.trim()
+      ));
+      if (ids.length) return [...new Set(ids)];
+    }
+    return MOUTH_PARAMETER_IDS;
+  }
+
+  function setMouthOpen(model, parameterIds, value) {
+    const coreModel = model?.internalModel?.coreModel;
+    if (!coreModel?.setParameterValueById) return;
+    const normalized = Math.min(1, Math.max(0, Number(value) || 0));
+    for (const parameterId of parameterIds) {
+      try {
+        coreModel.setParameterValueById(parameterId, normalized);
+      } catch {
+        // Models expose different mouth parameter IDs. Unsupported aliases are
+        // intentionally ignored without touching any model-owned definitions.
+      }
+    }
+  }
+
+  function sampleVoiceLevel() {
+    const analyser = state.voiceAnalyser;
+    if (!analyser || !state.voiceAudio || state.voiceAudio.paused) return 0;
+    if (!state.lipSyncSamples || state.lipSyncSamples.length !== analyser.frequencyBinCount) {
+      state.lipSyncSamples = new Uint8Array(analyser.frequencyBinCount);
+    }
+    analyser.getByteFrequencyData(state.lipSyncSamples);
+    const start = Math.min(2, state.lipSyncSamples.length);
+    const end = Math.min(30, state.lipSyncSamples.length);
+    let total = 0;
+    for (let index = start; index < end; index += 1) total += state.lipSyncSamples[index];
+    const average = end > start ? total / (end - start) : 0;
+    return Math.min(1, Math.max(0, (average - 7) / 58));
+  }
+
+  function installLive2DLipSync(model) {
+    uninstallLive2DLipSync();
+    const internalModel = model?.internalModel;
+    if (!internalModel?.on) return;
+    const mouthParameterIds = resolveMouthParameterIds(model);
+    const updateMouth = () => {
+      const target = sampleVoiceLevel();
+      if (!state.voiceAnalyser && !state.lipSyncResetPending) return;
+      const easing = target > state.lipSyncValue ? 0.52 : 0.28;
+      state.lipSyncValue += (target - state.lipSyncValue) * easing;
+      if (!state.voiceAnalyser && state.lipSyncValue < 0.01) {
+        state.lipSyncValue = 0;
+        state.lipSyncResetPending = false;
+      }
+      setMouthOpen(model, mouthParameterIds, state.lipSyncValue);
+    };
+    internalModel.on("beforeModelUpdate", updateMouth);
+    state.lipSyncBinding = { internalModel, updateMouth };
+  }
+
+  function uninstallLive2DLipSync() {
+    const binding = state.lipSyncBinding;
+    binding?.internalModel?.off?.("beforeModelUpdate", binding.updateMouth);
+    state.lipSyncBinding = null;
   }
 
   function getMotionButton(group, index) {
@@ -783,6 +872,7 @@
       state.modelReady = true;
       app.stage.addChild(model);
       installModelControls(app, model);
+      installLive2DLipSync(model);
 
       const groups = model.internalModel.settings.motions || {};
       buildMotionDeck(groups);
@@ -1091,6 +1181,137 @@
     }
   }
 
+  function ensureVoiceContext() {
+    if (!state.voiceContext || state.voiceContext.state === "closed") {
+      const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextConstructor) return null;
+      state.voiceContext = new AudioContextConstructor();
+    }
+    if (state.voiceContext.state === "suspended") {
+      state.voiceContext.resume().catch(() => undefined);
+    }
+    return state.voiceContext;
+  }
+
+  function clearVoicePlayback() {
+    const audio = state.voiceAudio;
+    if (audio) {
+      audio.onended = null;
+      audio.onerror = null;
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+    }
+    state.voiceSource?.disconnect?.();
+    state.voiceAnalyser?.disconnect?.();
+    if (state.voiceAudioUrl) URL.revokeObjectURL(state.voiceAudioUrl);
+    state.voiceAudio = null;
+    state.voiceAudioUrl = null;
+    state.voiceSource = null;
+    state.voiceAnalyser = null;
+    state.lipSyncSamples = null;
+    state.lipSyncResetPending = state.lipSyncValue > 0;
+  }
+
+  function stopVoicePlayback() {
+    state.voiceGeneration += 1;
+    clearVoicePlayback();
+  }
+
+  async function refreshVoiceSettings() {
+    try {
+      const response = await fetch(VOICE_SETTINGS_ENDPOINT, { cache: "no-store" });
+      if (!response.ok) throw new Error(`Voice settings returned HTTP ${response.status}`);
+      const settings = await response.json();
+      state.voiceEnabled = settings?.mode === "voice";
+      if (!state.voiceEnabled) stopVoicePlayback();
+      return state.voiceEnabled;
+    } catch (error) {
+      state.voiceEnabled = false;
+      stopVoicePlayback();
+      console.info("PromptSoul: voice settings are unavailable.", error);
+      return false;
+    }
+  }
+
+  async function requestVoiceAudio(text, emotion, signal) {
+    const response = await fetch(VOICE_SYNTHESIS_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, emotion: normalizeEmotion(emotion) }),
+      signal,
+    });
+    if (response.status === 503) {
+      state.voiceEnabled = false;
+      return null;
+    }
+    if (!response.ok) throw new Error(`Voice API returned HTTP ${response.status}`);
+    return response.blob();
+  }
+
+  async function playVoiceReply(text, emotion) {
+    if (!state.voiceEnabled) return false;
+    const generation = state.voiceGeneration + 1;
+    state.voiceGeneration = generation;
+    clearVoicePlayback();
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), VOICE_REQUEST_TIMEOUT_MS);
+    try {
+      const blob = await requestVoiceAudio(text, emotion, controller.signal);
+      if (!blob || generation !== state.voiceGeneration) return false;
+      const context = ensureVoiceContext();
+      if (!context) throw new Error("Web Audio API is unavailable");
+
+      const audioUrl = URL.createObjectURL(blob);
+      const audio = new Audio(audioUrl);
+      audio.preload = "auto";
+      state.voiceAudioUrl = audioUrl;
+      state.voiceAudio = audio;
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.minDecibels = -90;
+      analyser.maxDecibels = -10;
+      analyser.smoothingTimeConstant = 0.78;
+      const source = context.createMediaElementSource(audio);
+      source.connect(analyser);
+      analyser.connect(context.destination);
+
+      state.voiceSource = source;
+      state.voiceAnalyser = analyser;
+      state.lipSyncResetPending = true;
+      audio.onended = () => {
+        if (generation !== state.voiceGeneration) return;
+        clearVoicePlayback();
+      };
+      audio.onerror = () => {
+        if (generation !== state.voiceGeneration) return;
+        clearVoicePlayback();
+        console.info("PromptSoul: generated voice audio could not be played.");
+      };
+      await audio.play();
+      return true;
+    } catch (error) {
+      if (generation === state.voiceGeneration) clearVoicePlayback();
+      if (error?.name !== "AbortError") {
+        console.info("PromptSoul: voice reply unavailable; text chat remains active.", error);
+      }
+      return false;
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }
+
+  function initVoice() {
+    window.addEventListener("promptsoul:voice-changed", (event) => {
+      const enabled = Boolean(event?.detail?.enabled);
+      state.voiceEnabled = enabled;
+      if (!enabled) stopVoicePlayback();
+      refreshVoiceSettings();
+    });
+    window.addEventListener("pagehide", stopVoicePlayback);
+    refreshVoiceSettings();
+  }
+
   async function sendChatMessage(rawMessage) {
     const message = String(rawMessage || "").trim();
     if (!message || state.chatBusy) return;
@@ -1099,6 +1320,8 @@
     dom.chatInput.value = "";
     resizeComposer();
     setChatBusy(true);
+    stopVoicePlayback();
+    if (state.voiceEnabled) ensureVoiceContext();
     playEmotion("thinking");
 
     const minimumTyping = new Promise((resolve) => window.setTimeout(resolve, 680));
@@ -1107,6 +1330,7 @@
       setChatBusy(false);
       addMessage("assistant", result.reply, result.emotion);
       playEmotion(result.emotion);
+      playVoiceReply(result.reply, result.emotion);
       if (result.source === "api") {
         dom.chatMode.dataset.mode = "live";
         dom.chatMode.textContent = "API";
@@ -1121,6 +1345,7 @@
       const fallback = deterministicDemoReply(message);
       addMessage("assistant", fallback.reply, fallback.emotion);
       playEmotion(fallback.emotion);
+      playVoiceReply(fallback.reply, fallback.emotion);
       dom.chatMode.dataset.mode = "demo";
       dom.chatMode.textContent = "DEMO";
       dom.replySource.textContent = "浏览器演示回复";
@@ -1333,6 +1558,7 @@
     await loadNpcConfig();
     applyNpcConfig();
     initChat(reloadNotice?.messages);
+    initVoice();
     initMotionWorkshop(reloadNotice);
     initLive2D();
   }

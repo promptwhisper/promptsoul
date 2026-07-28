@@ -6,11 +6,11 @@
 
 简体中文 · [English](README.en.md) · [日本語](README.ja.md)
 
-PromptSoul 是一个前后端一体的 AI Live2D NPC 原型。用户发消息后，Next.js 服务端返回角色回复与情绪，浏览器把情绪映射成 Live2D 动作；“动作工坊”还能把自然语言描述编译成当前模型可安全表达的新动作。
+PromptSoul 是一个前后端一体的 AI Live2D NPC 原型。0.3 版接入 AITuber OnAir Chat 与 Voice：用户发消息后，Next.js 服务端返回角色回复与情绪，浏览器把情绪映射成 Live2D 动作；可选 TTS 会播放角色语音并实时驱动口型。“动作工坊”仍能把自然语言描述编译成当前模型可安全表达的新动作。
 
 > AI 不会直接修改网格、骨骼或 Cubism 绑定。所有动作都只能使用模型已有参数，并且只能注册到项目自有的 `PromptSoul` 动作组。
 
-**从这里开始：**[快速开始](#快速开始) · [接入 AI](#接入-ai) · [用提示词生成动作](#用提示词生成动作) · [更换模型](#更换-live2d-模型) · [安全边界](#安全说明)
+**从这里开始：**[快速开始](#快速开始) · [接入 AI](#接入-ai) · [接入角色语音](#接入角色语音) · [用提示词生成动作](#用提示词生成动作) · [更换模型](#更换-live2d-模型) · [安全边界](#安全说明)
 
 <sub>演示角色：Hiyori Momose ©Live2D；模型数据不包含在仓库中。</sub>
 
@@ -31,7 +31,7 @@ npm run motions:validate
 npm run dev
 ```
 
-打开 <http://127.0.0.1:8765>。不配置 API Key 时，聊天使用确定性的本地演示回复；Live2D、已有动作和交互仍然可用。动作工坊需要连接 AI Provider。
+打开 <http://127.0.0.1:8765>。不配置 API Key 时，聊天使用确定性的本地演示回复；Live2D、已有动作和交互仍然可用。动作工坊需要连接 AI Provider，角色语音默认关闭、按需独立配置。
 
 生产模式使用同一个 Node 服务：
 
@@ -46,7 +46,7 @@ PromptSoul 需要读取和写入本机模型工作副本，并把临时 Key 保�
 
 ## 接入 AI
 
-页面右上角的“AI Provider”设置支持填写 OpenAI 兼容的 API 地址、模型和 API Key。安全边界如下：
+页面右上角的“AI Provider”设置支持填写 OpenAI 兼容的 API 地址、模型和 API Key。普通 NPC 对话由 `@aituber-onair/chat` 提供 OpenAI-compatible 适配；动作生成继续使用 PromptSoul 的有界非流式客户端和独立安全编译器。安全边界如下：
 
 - 浏览器只提交一次 Key，应用不会写入 `localStorage`、Cookie、配置文件或 Git；
 - Node 后端只在当前进程内存中保存 Key，公开接口不会返回它，服务重启后自动清除；
@@ -74,6 +74,35 @@ npm start
 `gpt-5.6-luna` 是项目当前默认的 Provider 模型名，并非所有 OpenAI 兼容服务都提供；如果服务返回“模型不存在”，请在设置面板或 `NPC_MODEL` 中改成该 Provider 实际支持的模型。
 
 前端临时配置优先于环境变量；点击“清除临时 Key”后恢复环境变量或演示模式。
+
+## 接入角色语音
+
+页面右上角的“角色语音”设置独立于聊天 Provider。当前接入 `@aituber-onair/voice` 的 `openaiCompatible` 引擎，可连接 OpenAI Speech API、Kokoro FastAPI 等兼容的完整 `/v1/audio/speech` 地址。语音启用后，每条角色回复会由 Node 后端生成音频；浏览器通过 Web Audio 分析音量，并在 `beforeModelUpdate` 阶段只写当前运行时的嘴型参数，不修改模型文件、动作定义或原有动作组。
+
+口型会优先使用模型 `model3.json` 中 `LipSync` 分组声明的参数；模型没有声明时，才回退到常见嘴部参数 ID。项目已使用官方 Hiyori `.moc3` 和 Cubism Core 5.1.0 验证 `ParamMouthOpenY`：参数可在 0–1 范围内写入并归零，张嘴前后有 6 个 ArtMesh、321 个顶点坐标发生形变。
+
+语音 Key 不复用聊天 Key。它只保存在当前 Node 进程内存中，公开设置接口只返回 `hasApiKey`。本机免 Key TTS 可以把 Key 留空；远程地址必须使用 HTTPS。TTS 失败只会跳过本次语音，不会中断文字聊天或情绪动作。
+
+无人值守部署可以使用：
+
+```bash
+export NPC_TTS_ENABLED=\"true\"
+export NPC_TTS_API_KEY=\"独立的语音 API Key\" # 本机免 Key 服务可不设置
+export NPC_TTS_API_URL=\"https://api.openai.com/v1/audio/speech\"
+export NPC_TTS_MODEL=\"gpt-4o-mini-tts\"
+export NPC_TTS_SPEAKER=\"alloy\"
+export NPC_TTS_SPEED=\"1\"
+npm start
+```
+
+| 变量 | 说明 | 默认值 |
+|---|---|---|
+| `NPC_TTS_ENABLED` | 是否生成角色语音 | `false` |
+| `NPC_TTS_API_KEY` | 独立语音 Key | 无 |
+| `NPC_TTS_API_URL` | OpenAI-compatible Speech 完整地址 | `https://api.openai.com/v1/audio/speech` |
+| `NPC_TTS_MODEL` | TTS 模型 | `gpt-4o-mini-tts` |
+| `NPC_TTS_SPEAKER` | 音色或 Speaker ID | `alloy` |
+| `NPC_TTS_SPEED` | 语速，范围 0.25–4 | `1` |
 
 ## 用提示词生成动作
 
@@ -125,9 +154,9 @@ CHROME=/path/to/chrome npm run verify:browser
 
 ```text
 app/                         Next.js 页面与 Route Handlers
-components/                  React UI（包括内存 Key 设置面板）
+components/                  React UI（聊天与独立语音内存设置面板）
 assets/                      Live2D 浏览器运行时与响应式样式
-lib/server/                  Provider、聊天、模型和动作安全逻辑
+lib/server/                  AITuber 聊天/语音适配、Provider、模型和动作安全逻辑
 scripts/                     Node/TypeScript CLI
 tests-node/                  node:test 自动化测试
 motion-defs/<model>.ts       模型专属基础动作定义
@@ -162,6 +191,7 @@ npm run verify
 ## 安全说明
 
 - 不要把真实 API Key 写入源码、`.env` 提交、截图、日志或模型文件。前端填写只适合本机开发；生产部署优先使用环境变量和外部 Secret 管理。
+- 聊天与语音使用两个独立 Key；不要假设配置聊天 Provider 会自动授权 TTS。
 - 当前服务没有账号、租户隔离、公网鉴权或限流，只绑定 `127.0.0.1`，不要直接暴露到公网。
 - 动作生成会修改本地模型工作副本，但只接受本机同源请求，并且始终受独立校验器约束。
 - Hiyori 下载固定到 Live2D 官方 HTTPS 地址；通用模型导入器会拒绝路径穿越、符号链接、特殊文件、ZIP64、加密条目和超限压缩包。仍应只导入你有权使用且可信的模型。
@@ -173,6 +203,7 @@ npm run verify
 - Hiyori 模型不包含在仓库中。下载或使用前必须同意 [Live2D Free Material License Agreement](https://www.live2d.com/eula/live2d-free-material-license-agreement_en.html) 与 [Live2D Cubism Sample Data Terms of Use](https://www.live2d.com/en/learn/sample/model-terms/)。Hiyori 的角色设计不得修改。
 - Live2D Cubism Core 受 [Live2D Proprietary Software License](https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_en.html) 约束。
 - PixiJS 与 `pixi-live2d-display` 使用各自许可证；你导入的模型和素材仍受原作者许可约束。
+- `@aituber-onair/chat` 与 `@aituber-onair/voice` 按 MIT License 使用，精确版本见 `package-lock.json`。
 
 完整的第三方归属和许可证边界见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。参与开发前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 与 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)；安全问题请按 [SECURITY.md](SECURITY.md) 私下报告，不要公开包含漏洞细节、API Key 或受限模型。
 

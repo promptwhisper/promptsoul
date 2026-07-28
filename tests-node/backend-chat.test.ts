@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { afterEach, describe, test } from "node:test";
 
 import { POST as postChat } from "../app/api/chat/route";
 import { GET as getStatus } from "../app/api/status/route";
+import { callAituberChat } from "../lib/server/aituber-chat";
 import {
   chat,
   DEFAULT_PERSONA,
@@ -73,12 +75,20 @@ describe("chat service and routes", () => {
       model: "gpt-5.6-luna",
       source: "runtime" as const,
     };
-    const fetchImpl = (async () => new Response(JSON.stringify({
-      choices: [{ message: { content: { reply: "角色回答", emotion: "invented" } } }],
-    }), { status: 200 })) as typeof fetch;
     const result = await chat(
       { message: "你好" },
-      { settings, persona: DEFAULT_PERSONA, provider: { fetchImpl } },
+      {
+        settings,
+        persona: DEFAULT_PERSONA,
+        provider: {
+          createService: () => ({
+            chatOnce: async () => ({
+              blocks: [{ type: "text", text: "{\"reply\":\"角色回答\",\"emotion\":\"invented\"}" }],
+              stop_reason: "end",
+            }),
+          }),
+        },
+      },
     );
     assert.deepEqual(result, { reply: "角色回答", emotion: "neutral", mode: "provider" });
   });
@@ -127,5 +137,56 @@ describe("chat service and routes", () => {
     }));
     assert.equal(tooLarge.status, 413);
     assert.equal((await tooLarge.json() as { error: { code: string } }).error.code, "message_too_large");
+  });
+});
+
+describe("AITuber OnAir chat adapter", () => {
+  test("uses the package's OpenAI-compatible non-streaming service", async () => {
+    let requestBody = "";
+    let authorization = "";
+    const server = createServer((request, response) => {
+      authorization = String(request.headers.authorization || "");
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        requestBody += chunk;
+      });
+      request.on("end", () => {
+        response.writeHead(200, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({
+          choices: [{
+            message: { content: "{\"reply\":\"来自 AITuber\",\"emotion\":\"happy\"}" },
+            finish_reason: "stop",
+          }],
+        }));
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    try {
+      const address = server.address();
+      assert.ok(address && typeof address === "object");
+      const content = await callAituberChat(
+        {
+          apiKey: "aituber-adapter-key",
+          apiBase: `http://127.0.0.1:${address.port}/v1`,
+          model: "local-model",
+          source: "runtime",
+        },
+        [{ role: "user", content: "你好" }],
+      );
+      assert.match(content, /来自 AITuber/u);
+      assert.equal(authorization, "Bearer aituber-adapter-key");
+      assert.deepEqual(JSON.parse(requestBody), {
+        model: "local-model",
+        messages: [{ role: "user", content: "你好" }],
+        stream: false,
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+      });
+    }
   });
 });

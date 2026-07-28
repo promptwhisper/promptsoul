@@ -30,7 +30,7 @@ npm run motions:validate
 ## 变更规则
 
 - 保留 Next.js/Node 一体架构，不恢复 Python 运行时依赖。
-- API Key 只能存在于 Node 进程内存中；禁止浏览器持久化、日志记录或接口回传。
+- 聊天与语音 API Key 只能分别存在于 Node 进程内存中；禁止浏览器持久化、日志记录或接口回传。
 - 新动作只能注册到 `PromptSoul`。不得编辑或覆盖 `Action`、`Idle`、`Tap` 等模型原有动作组。
 - 更换模型后先运行 `npm run analyze:model`，不得照搬 Hiyori 参数。
 - 不直接编辑 `models/` 下的 `.motion3.json` 或 `model3.json`。

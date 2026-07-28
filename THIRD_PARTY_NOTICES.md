@@ -25,6 +25,15 @@ PromptSoul 基于 [shinshin86/live2d-add-motion-sample-web-ui](https://github.co
 
 Node.js 依赖及精确版本记录在 `package-lock.json` 中，并继续受各自许可证约束。
 
+## AITuber OnAir packages
+
+PromptSoul 的普通 NPC 对话与可选 TTS 分别使用：
+
+- [`@aituber-onair/chat`](https://github.com/shinshin86/aituber-onair/tree/main/packages/chat)，MIT License
+- [`@aituber-onair/voice`](https://github.com/shinshin86/aituber-onair/tree/main/packages/voice)，MIT License
+
+PromptSoul 保留自己的 `/api/chat` 契约、Key 隔离、动作安全编译器和 Live2D 运行时边界；精确依赖版本与完整传递依赖记录在 `package-lock.json`。
+
 ## Community standards
 
 `CODE_OF_CONDUCT.md` 是对 [Contributor Covenant 2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/) 的简化改写。Contributor Covenant 原版按 [Creative Commons Attribution 4.0 International](https://creativecommons.org/licenses/by/4.0/) 许可。

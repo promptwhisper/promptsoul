@@ -6,11 +6,11 @@
 
 [简体中文](README.md) · English · [日本語](README.ja.md)
 
-PromptSoul is a local-first, self-hosted AI Live2D NPC prototype. A Next.js server returns a short character reply and an emotion label, the browser maps that emotion to a Live2D motion, and the Motion Workshop can compile a natural-language prompt into a strictly constrained action supported by the current model.
+PromptSoul is a local-first, self-hosted AI Live2D NPC prototype. Version 0.3 integrates AITuber OnAir Chat and Voice: a Next.js server returns a character reply and emotion label, the browser maps the emotion to a Live2D motion, and optional TTS audio drives runtime lip sync. The Motion Workshop still compiles natural-language prompts into strictly constrained actions supported by the current model.
 
 > The AI never edits meshes, rigging, or Cubism bindings. Generated actions may use only existing model parameters and may be registered only in the project-owned `PromptSoul` motion group.
 
-**Start here:** [Quick start](#quick-start) · [AI Provider](#ai-provider) · [Prompt-to-motion](#prompt-to-motion-generation) · [Use another model](#using-another-live2d-model) · [Security](#contributing-and-security)
+**Start here:** [Quick start](#quick-start) · [AI Provider](#ai-provider) · [Character voice](#character-voice) · [Prompt-to-motion](#prompt-to-motion-generation) · [Use another model](#using-another-live2d-model) · [Security](#contributing-and-security)
 
 <sub>Demo character: Hiyori Momose ©Live2D. Model data is not included in this repository.</sub>
 
@@ -37,7 +37,7 @@ npm run motions:validate
 npm run dev
 ```
 
-Open <http://127.0.0.1:8765>. Without an API Key, chat uses deterministic local demo replies while the Live2D renderer, existing actions, and interactions remain available. The Motion Workshop requires an AI Provider.
+Open <http://127.0.0.1:8765>. Without an API Key, chat uses deterministic local demo replies while the Live2D renderer, existing actions, and interactions remain available. The Motion Workshop requires an AI Provider. Character voice is off by default and is configured separately.
 
 For a production build on a trusted self-hosted machine:
 
@@ -50,7 +50,7 @@ PromptSoul reads and writes a local model working copy and keeps temporary Provi
 
 ## AI Provider
 
-The top-right settings panel accepts an OpenAI-compatible API base URL, model name, and API Key.
+The top-right settings panel accepts an OpenAI-compatible API base URL, model name, and API Key. Normal NPC chat uses `@aituber-onair/chat`; motion generation retains PromptSoul's bounded non-streaming transport and independent safety compiler.
 
 - The browser submits the Key once to the same-origin local Node server.
 - The Key is kept only in Node process memory and is never written to browser storage, cookies, config files, logs, responses, or Git.
@@ -71,6 +71,24 @@ npm start
 `NPC_API_KEY` takes precedence over `OPENAI_API_KEY`. Runtime settings entered in the UI take precedence until they are cleared or the process restarts.
 
 `gpt-5.6-luna` is PromptSoul's current default Provider model name and is not available from every OpenAI-compatible service. Select a model actually supported by your Provider if it returns a model-not-found error.
+
+## Character voice
+
+The separate Character Voice panel uses the `openaiCompatible` engine from `@aituber-onair/voice`. It accepts a complete `/v1/audio/speech` endpoint for services such as OpenAI Speech or Kokoro FastAPI. The Node server generates audio; the browser analyzes it with Web Audio and updates only runtime mouth parameters during `beforeModelUpdate`. It does not edit model assets, motion definitions, or model-owned motion groups.
+
+Lip sync prefers the parameters declared by the model's `LipSync` group in `model3.json` and falls back to common mouth parameter IDs only when that group is absent. The official Hiyori `.moc3` was verified with Cubism Core 5.1.0: `ParamMouthOpenY` accepts and resets values across its 0–1 range, and opening the mouth deforms 321 vertex coordinates across six ArtMeshes.
+
+The TTS Key is independent from the chat Key and remains in Node process memory. Keyless loopback TTS is supported. Remote endpoints require HTTPS. A TTS failure skips audio without interrupting text chat or emotion motions.
+
+```bash
+export NPC_TTS_ENABLED=\"true\"
+export NPC_TTS_API_KEY=\"separate voice key\" # optional for keyless local TTS
+export NPC_TTS_API_URL=\"https://api.openai.com/v1/audio/speech\"
+export NPC_TTS_MODEL=\"gpt-4o-mini-tts\"
+export NPC_TTS_SPEAKER=\"alloy\"
+export NPC_TTS_SPEED=\"1\"
+npm start
+```
 
 ## Prompt-to-motion generation
 
@@ -110,9 +128,9 @@ Update `npc.config.json` and `modelAttribution` when replacing the character so 
 
 ```text
 app/                         Next.js pages and Node Route Handlers
-components/                  React UI, including process-memory Provider settings
+components/                  React UI for process-memory chat and voice settings
 assets/                      Live2D browser runtime and responsive styles
-lib/server/                  Provider, chat, model, and motion safety logic
+lib/server/                  AITuber chat/voice adapters plus model and motion safety
 scripts/                     Node/TypeScript command-line tools
 tests-node/                  node:test suites
 motion-defs/<model>.ts       Model-specific built-in motion definitions

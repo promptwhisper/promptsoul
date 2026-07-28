@@ -2,11 +2,8 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import {
-  callChatCompletions,
-  type ChatCompletionMessage,
-  type ChatCompletionOptions,
-} from "./provider-client";
+import { callAituberChat, type AituberChatOptions } from "./aituber-chat";
+import { type ChatCompletionMessage } from "./provider-client";
 import { getProviderSettings, type ProviderSettings } from "./provider-store";
 
 export const ALLOWED_EMOTIONS = Object.freeze([
@@ -343,7 +340,7 @@ export async function chat(
   options: {
     readonly settings?: ProviderSettings;
     readonly persona?: Persona;
-    readonly provider?: ChatCompletionOptions;
+    readonly provider?: AituberChatOptions;
   } = {},
 ): Promise<ChatResult> {
   const { message, history } = validateChatPayload(payload);
@@ -353,7 +350,7 @@ export async function chat(
     const [reply, emotion] = demoReply(persona, message);
     return { reply, emotion, mode: "demo" };
   }
-  const content = await callChatCompletions(
+  const content = await callAituberChat(
     settings,
     buildChatMessages(persona, message, history),
     options.provider,

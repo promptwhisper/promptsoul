@@ -8,6 +8,7 @@ dialog {
 input:focus-visible,
 .provider-trigger:focus-visible,
 .provider-close:focus-visible,
+.provider-toggle input:focus-visible,
 .provider-secret-field button:focus-visible,
 .provider-actions button:focus-visible {
   outline: 2px solid var(--mint);
@@ -192,6 +193,49 @@ input:focus-visible,
   line-height: 1.55;
 }
 
+.provider-field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.provider-toggle {
+  min-height: 62px;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: rgba(255, 255, 255, 0.025);
+  cursor: pointer;
+}
+
+.provider-toggle input {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  margin: 2px 0 0;
+  accent-color: var(--mint);
+}
+
+.provider-toggle span {
+  display: grid;
+  gap: 4px;
+}
+
+.provider-toggle strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.provider-toggle small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.55;
+}
+
 .provider-secret-field {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -304,6 +348,10 @@ input:focus-visible,
   .provider-actions {
     display: grid;
     grid-template-columns: 1fr 1fr;
+  }
+
+  .provider-field-row {
+    grid-template-columns: 1fr;
   }
 
   .provider-actions button {

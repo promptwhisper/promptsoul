@@ -1,5 +1,6 @@
 import { LegacyRuntime } from "@/components/legacy-runtime";
 import { ProviderSettings } from "@/components/provider-settings";
+import { VoiceSettings } from "@/components/voice-settings";
 
 export default function HomePage() {
   return (
@@ -20,6 +21,7 @@ export default function HomePage() {
           <div className="topbar-meta">
             <span className="lab-tag"><i aria-hidden="true" /> EXPERIMENT 01</span>
             <ProviderSettings />
+            <VoiceSettings />
             <span className="connection-pill" id="modelState" data-state="loading">
               <span className="state-dot" aria-hidden="true" />
               <span className="state-copy">模型连接中</span>
@@ -113,7 +115,7 @@ export default function HomePage() {
             </form>
 
             <div className="chat-footer">
-              <span><i aria-hidden="true" /> 情绪会驱动 Live2D 动作</span>
+              <span><i aria-hidden="true" /> 情绪动作 · 语音口型</span>
               <span id="replySource">本地演示已就绪</span>
             </div>
           </aside>

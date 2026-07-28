@@ -1,15 +1,17 @@
 {
   "name": "promptsoul",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Local-first AI Live2D NPC with safe prompt-to-motion generation",
   "license": "MIT",
   "keywords": [
     "live2d",
     "ai-npc",
+    "aituber",
     "nextjs",
     "typescript",
     "self-hosted",
+    "text-to-speech",
     "motion-generation"
   ],
   "engines": {
@@ -31,6 +33,8 @@
     "motions:validate": "tsx scripts/validate-motions.ts"
   },
   "dependencies": {
+    "@aituber-onair/chat": "0.49.0",
+    "@aituber-onair/voice": "0.19.0",
     "next": "16.2.10",
     "react": "19.2.7",
     "react-dom": "19.2.7"

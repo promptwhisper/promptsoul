@@ -43,6 +43,22 @@ test("the browser chat request stays aligned with the strict server contract", (
   assert.doesNotMatch(requestBlock, /\bnpc\s*:/u);
 });
 
+test("the browser voice request stays separate and drives only runtime mouth parameters", () => {
+  const source = readFileSync(path.join(process.cwd(), "assets", "app.js"), "utf8");
+  assert.match(
+    source,
+    /fetch\(VOICE_SYNTHESIS_ENDPOINT,[\s\S]*?body:\s*JSON\.stringify\(\{\s*text,\s*emotion:\s*normalizeEmotion\(emotion\)\s*\}\)/u,
+  );
+  assert.match(source, /createMediaElementSource\(audio\)/u);
+  assert.match(source, /settings\?\.getLipSyncParameters\?\.\(\)/u);
+  assert.match(source, /internalModel\.on\("beforeModelUpdate",\s*updateMouth\)/u);
+  assert.match(source, /setParameterValueById\(parameterId,\s*normalized\)/u);
+  const voiceBlock = source.match(
+    /function ensureVoiceContext\(\)[\s\S]*?function sendChatMessage/u,
+  )?.[0] ?? "";
+  assert.doesNotMatch(voiceBlock, /localStorage|sessionStorage|document\.cookie/u);
+});
+
 test("build configuration never bundles licensed local models into standalone output", () => {
   const config = readFileSync(path.join(process.cwd(), "next.config.ts"), "utf8");
   assert.doesNotMatch(config, /output\s*:\s*["']standalone["']/u);
