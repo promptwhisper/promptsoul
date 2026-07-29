@@ -6,7 +6,7 @@ const MAX_API_BASE_CHARS = 2_048;
 const MAX_MODEL_CHARS = 200;
 const NODE_INSPECT = Symbol.for("nodejs.util.inspect.custom");
 
-export type ProviderSource = "environment" | "runtime";
+export type ProviderSource = "environment";
 
 export interface ProviderSettings {
   readonly apiKey: string | null;
@@ -58,23 +58,6 @@ class ProviderSettingsSnapshot implements ProviderSettings {
   [NODE_INSPECT](): PublicProviderSettings {
     return toPublicSettings(this);
   }
-}
-
-interface RuntimeProviderStore {
-  override: ProviderSettingsSnapshot | null;
-}
-
-const STORE_KEY: unique symbol = Symbol.for("promptsoul.provider.runtime.v1") as never;
-type GlobalWithProviderStore = typeof globalThis & {
-  [STORE_KEY]?: RuntimeProviderStore;
-};
-
-function runtimeStore(): RuntimeProviderStore {
-  const target = globalThis as GlobalWithProviderStore;
-  if (!target[STORE_KEY]) {
-    target[STORE_KEY] = { override: null };
-  }
-  return target[STORE_KEY];
 }
 
 function nonemptyEnvironmentValue(name: string): string | null {
@@ -182,7 +165,7 @@ function environmentSettings(): ProviderSettingsSnapshot {
 }
 
 export function getProviderSettings(): Readonly<ProviderSettings> {
-  return runtimeStore().override ?? environmentSettings();
+  return environmentSettings();
 }
 
 export function toPublicSettings(settings: ProviderSettings): PublicProviderSettings {
@@ -197,29 +180,4 @@ export function toPublicSettings(settings: ProviderSettings): PublicProviderSett
 
 export function getPublicProviderSettings(): PublicProviderSettings {
   return toPublicSettings(getProviderSettings());
-}
-
-export function setRuntimeProviderSettings(input: unknown): PublicProviderSettings {
-  if (!input || typeof input !== "object" || Array.isArray(input)) {
-    throw new ProviderConfigurationError("Request JSON must be an object.");
-  }
-  const object = input as Record<string, unknown>;
-  const allowed = new Set(["apiKey", "apiBase", "model"]);
-  if (Object.keys(object).some((key) => !allowed.has(key))) {
-    throw new ProviderConfigurationError("Provider settings contain unsupported fields.");
-  }
-  if (!("apiKey" in object) || !("apiBase" in object) || !("model" in object)) {
-    throw new ProviderConfigurationError("'apiKey', 'apiBase', and 'model' are required.");
-  }
-
-  const next = createSettings(object.apiKey, object.apiBase, object.model, "runtime");
-  // A single assignment is the commit point. Concurrent requests observe the old
-  // immutable snapshot or the complete new snapshot, never a partial update.
-  runtimeStore().override = next;
-  return toPublicSettings(next);
-}
-
-export function resetRuntimeProviderSettings(): PublicProviderSettings {
-  runtimeStore().override = null;
-  return toPublicSettings(environmentSettings());
 }

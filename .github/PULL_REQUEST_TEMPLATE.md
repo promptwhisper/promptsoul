@@ -10,7 +10,7 @@
 
 - [ ] 变更范围聚焦，并补充了必要的测试和文档。
 - [ ] 已运行 `npm run verify` 和 `git diff --check`。
-- [ ] 没有提交 API Key、`.env`、聊天记录、私有提示词、模型、纹理、生成动作或本地配置。
+- [ ] 没有提交 API Key、`.env`、聊天记录、私有提示词、模型、纹理、AIVMX、缓存 WAV、录制成品、生成动作或本地配置。
 - [ ] 没有把运行时 Key 写入浏览器存储、文件、日志或响应。
 - [ ] 动作只写入 `PromptSoul`，未修改 `Action`、`Idle`、`Tap` 等原有组。
 - [ ] 新模型先运行了 `npm run analyze:model`，没有照搬 Hiyori 参数。

@@ -14,7 +14,6 @@ import { afterEach, test } from "node:test";
 import { POST as postMotion } from "../app/api/motions/generate/route";
 import { DELETE as deleteMotionRoute } from "../app/api/motions/[motionId]/route";
 import { deleteMotion, generateMotion, motionCapabilities } from "../lib/server/motion-api";
-import { resetRuntimeProviderSettings } from "../lib/server/provider-store";
 
 const ORIGINAL_NPC_KEY = process.env.NPC_API_KEY;
 const ORIGINAL_OPENAI_KEY = process.env.OPENAI_API_KEY;
@@ -22,7 +21,6 @@ const ORIGINAL_OPENAI_KEY = process.env.OPENAI_API_KEY;
 function clearKeys(): void {
   delete process.env.NPC_API_KEY;
   delete process.env.OPENAI_API_KEY;
-  resetRuntimeProviderSettings();
 }
 
 afterEach(() => {
@@ -43,20 +41,35 @@ test("the browser chat request stays aligned with the strict server contract", (
   assert.doesNotMatch(requestBlock, /\bnpc\s*:/u);
 });
 
-test("the browser voice request stays separate and drives only runtime mouth parameters", () => {
+test("the browser Aivis request stays same-origin and drives only runtime mouth parameters", () => {
   const source = readFileSync(path.join(process.cwd(), "assets", "app.js"), "utf8");
-  assert.match(
-    source,
-    /fetch\(VOICE_SYNTHESIS_ENDPOINT,[\s\S]*?body:\s*JSON\.stringify\(\{\s*text,\s*emotion:\s*normalizeEmotion\(emotion\)\s*\}\)/u,
+  const playback = readFileSync(
+    path.join(process.cwd(), "lib", "shared", "browser-tts.ts"),
+    "utf8",
   );
-  assert.match(source, /createMediaElementSource\(audio\)/u);
+  assert.match(source, /const TTS_SYNTHESIS_ENDPOINT = "\/api\/tts"/u);
+  assert.match(
+    playback,
+    /this\.fetchImpl\(this\.endpoint,[\s\S]*?body:\s*JSON\.stringify\(\{ text: item\.text/u,
+  );
+  assert.match(playback, /context\.createBufferSource\(\)/u);
+  assert.match(playback, /source\.connect\(this\.analyser\)/u);
+  assert.match(playback, /source\.onended\s*=\s*\(\)\s*=>\s*resolve\(\)/u);
+  assert.match(playback, /getFloatTimeDomainData\(this\.samples\)/u);
+  assert.match(playback, /calculateRms\(this\.samples\)/u);
   assert.match(source, /settings\?\.getLipSyncParameters\?\.\(\)/u);
   assert.match(source, /internalModel\.on\("beforeModelUpdate",\s*updateMouth\)/u);
-  assert.match(source, /setParameterValueById\(parameterId,\s*normalized\)/u);
-  const voiceBlock = source.match(
-    /function ensureVoiceContext\(\)[\s\S]*?function sendChatMessage/u,
-  )?.[0] ?? "";
-  assert.doesNotMatch(voiceBlock, /localStorage|sessionStorage|document\.cookie/u);
+  assert.match(source, /index\s*>=\s*count/u);
+  assert.match(source, /setParameterValueByIndex\(index,\s*normalized\)/u);
+  assert.match(source, /getParameterValueByIndex\(index\)/u);
+  assert.match(source, /mouthOpen:\s*state\.appliedLipSyncValue/u);
+  assert.match(source, /lipSyncParameterIds:\s*\[\.\.\.state\.lipSyncParameterIds\]/u);
+  assert.match(source, /mouthEvidence:\s*state\.lipSyncParameterReadbackVerified/u);
+  assert.match(source, /artMeshDeformationVerified:\s*false/u);
+  assert.match(source, /const revision = \+\+state\.ttsStatusRevision/u);
+  assert.match(source, /const streamTtsEnabled = state\.ttsEnabled/u);
+  assert.doesNotMatch(`${source}\n${playback}`, /speechSynthesis|SpeechSynthesisUtterance/u);
+  assert.doesNotMatch(playback, /localStorage|sessionStorage|document\.cookie|127\.0\.0\.1:10101/u);
 });
 
 test("build configuration never bundles licensed local models into standalone output", () => {
@@ -209,7 +222,7 @@ test("motion API compiles provider data into PromptSoul without changing origina
           apiKey: "test-only-key",
           apiBase: "https://provider.test/v1",
           model: "test-model",
-          source: "runtime",
+          source: "environment",
         },
         callProvider: async (_settings, messages) => {
           const request = JSON.parse(messages.at(-1)?.content ?? "{}") as { required_id: string };
@@ -250,7 +263,7 @@ test("motion API compiles provider data into PromptSoul without changing origina
         apiKey: "test-only-key",
         apiBase: "https://provider.test/v1",
         model: "test-model",
-        source: "runtime",
+        source: "environment",
       },
     });
     assert.equal(capabilities.motions.length, 1);
@@ -269,7 +282,7 @@ test("motion API compiles provider data into PromptSoul without changing origina
           apiKey: "test-only-key",
           apiBase: "https://provider.test/v1",
           model: "test-model",
-          source: "runtime",
+          source: "environment",
         },
         callProvider: async () => {
           markProviderStarted();

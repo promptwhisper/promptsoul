@@ -25,6 +25,15 @@ out/
 .vercel/
 coverage/
 .cache/
+# Local AivisSpeech inference cache (contains generated conversation audio).
+.cache/aivis-tts/
+# Local smoke-test and recording outputs.
+/artifacts/
+*.[Aa][Ii][Vv][Mm][Xx]
+*.wav
+*.webm
+*.mp4
+*.ogg
 *.tsbuildinfo
 *.log
 npm-debug.log*

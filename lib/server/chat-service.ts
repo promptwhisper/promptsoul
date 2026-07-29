@@ -2,7 +2,11 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { callAituberChat, type AituberChatOptions } from "./aituber-chat";
+import {
+  callAituberChat,
+  callAituberChatStream,
+  type AituberChatOptions,
+} from "./aituber-chat";
 import { type ChatCompletionMessage } from "./provider-client";
 import { getProviderSettings, type ProviderSettings } from "./provider-store";
 
@@ -26,6 +30,10 @@ const MAX_REPLY_CHARS = 4_000;
 const MAX_CONFIG_BYTES = 32 * 1024;
 const MAX_SYSTEM_PROMPT_CHARS = 8_000;
 
+function truncateReply(value: string): string {
+  return [...value].slice(0, MAX_REPLY_CHARS).join("").trimEnd();
+}
+
 export interface Persona {
   readonly name: string;
   readonly systemPrompt: string;
@@ -47,6 +55,8 @@ export interface ChatResult {
   readonly emotion: Emotion;
   readonly mode: "demo" | "provider";
 }
+
+export type ChatReplyDeltaHandler = (text: string) => void;
 
 export class ChatApiError extends Error {
   readonly status: number;
@@ -199,7 +209,7 @@ function normalizeReplyObject(value: unknown): readonly [string, Emotion] | null
   }
   const reply = [object.reply, object.message, object.text].find((item) => typeof item === "string");
   if (typeof reply !== "string" || !reply.trim()) return null;
-  return [reply.trim().slice(0, MAX_REPLY_CHARS).trimEnd(), normalizeEmotion(object.emotion)];
+  return [truncateReply(reply.trim()), normalizeEmotion(object.emotion)];
 }
 
 function contentToText(content: unknown): string {
@@ -289,7 +299,74 @@ export function parseModelResponse(content: unknown): readonly [string, Emotion]
   }
   const plain = text.replace(/^```(?:text)?\s*|\s*```$/giu, "").trim();
   if (!plain) throw new ChatApiError(502, "provider_response_invalid", "The AI provider returned an empty response.");
-  return [plain.slice(0, MAX_REPLY_CHARS).trimEnd(), "neutral"];
+  return [truncateReply(plain), "neutral"];
+}
+
+function completeJsonStringFragment(fragment: string): string {
+  let safe = fragment;
+  let trailingBackslashes = 0;
+  for (let index = safe.length - 1; index >= 0 && safe[index] === "\\"; index -= 1) {
+    trailingBackslashes += 1;
+  }
+  if (trailingBackslashes % 2 === 1) safe = safe.slice(0, -1);
+  const unicodeEscape = safe.match(/\\u[0-9a-f]{0,3}$/iu);
+  if (unicodeEscape?.index !== undefined) safe = safe.slice(0, unicodeEscape.index);
+  return safe;
+}
+
+/** Extracts decoded text from the top-level JSON `reply` string as it streams. */
+export class JsonReplyStreamExtractor {
+  private buffer = "";
+  private valueStart = -1;
+  private emitted = "";
+  private closed = false;
+
+  push(chunk: string): string {
+    if (this.closed || !chunk) return "";
+    this.buffer += chunk;
+    if (this.valueStart < 0) {
+      const match = /"reply"\s*:\s*"/iu.exec(this.buffer);
+      if (!match) return "";
+      this.valueStart = match.index + match[0].length;
+    }
+
+    let escaped = false;
+    let valueEnd = this.buffer.length;
+    for (let index = this.valueStart; index < this.buffer.length; index += 1) {
+      const char = this.buffer[index];
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        valueEnd = index;
+        this.closed = true;
+        break;
+      }
+    }
+
+    const fragment = completeJsonStringFragment(this.buffer.slice(this.valueStart, valueEnd));
+    let decoded: string;
+    try {
+      decoded = JSON.parse(`"${fragment}"`) as string;
+    } catch {
+      return "";
+    }
+    const bounded = truncateReply(decoded);
+    if (!bounded.startsWith(this.emitted)) return "";
+    const delta = bounded.slice(this.emitted.length);
+    this.emitted = bounded;
+    return delta;
+  }
+
+  finish(reply: string): string {
+    const bounded = truncateReply(reply);
+    if (!bounded.startsWith(this.emitted)) return "";
+    const delta = bounded.slice(this.emitted.length);
+    this.emitted = bounded;
+    this.closed = true;
+    return delta;
+  }
 }
 
 export function buildChatMessages(
@@ -322,7 +399,7 @@ export function demoReply(persona: Persona, message: string): readonly [string, 
   ];
   for (const [fragments, words, reply, emotion] of rules) {
     if (fragments.some((fragment) => lowered.includes(fragment)) || words.some((word) => englishWords.has(word))) {
-      return [reply.slice(0, MAX_REPLY_CHARS), emotion];
+      return [truncateReply(reply), emotion];
     }
   }
   const options: ReadonlyArray<readonly [string, Emotion]> = [
@@ -356,5 +433,39 @@ export async function chat(
     options.provider,
   );
   const [reply, emotion] = parseModelResponse(content);
+  return { reply, emotion, mode: "provider" };
+}
+
+export async function chatStream(
+  payload: unknown,
+  onReplyDelta: ChatReplyDeltaHandler,
+  options: {
+    readonly settings?: ProviderSettings;
+    readonly persona?: Persona;
+    readonly provider?: AituberChatOptions;
+  } = {},
+): Promise<ChatResult> {
+  const { message, history } = validateChatPayload(payload);
+  const settings = options.settings ?? getProviderSettings();
+  const persona = options.persona ?? loadPersona();
+  if (!settings.apiKey) {
+    const [reply, emotion] = demoReply(persona, message);
+    onReplyDelta(reply);
+    return { reply, emotion, mode: "demo" };
+  }
+
+  const extractor = new JsonReplyStreamExtractor();
+  const content = await callAituberChatStream(
+    settings,
+    buildChatMessages(persona, message, history),
+    (rawDelta) => {
+      const replyDelta = extractor.push(rawDelta);
+      if (replyDelta) onReplyDelta(replyDelta);
+    },
+    options.provider,
+  );
+  const [reply, emotion] = parseModelResponse(content);
+  const tail = extractor.finish(reply);
+  if (tail) onReplyDelta(tail);
   return { reply, emotion, mode: "provider" };
 }

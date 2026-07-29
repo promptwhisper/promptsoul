@@ -1,3 +1,8 @@
+import {
+  TtsPlaybackManager,
+  getUnstreamedReplyTail,
+} from "../lib/shared/browser-tts";
+
 (() => {
   "use strict";
 
@@ -7,9 +12,8 @@
   const MOTION_DELETE_ENDPOINT = (motionId) => `/api/motions/${encodeURIComponent(motionId)}`;
   const MOTION_REQUEST_TIMEOUT_MS = 120000;
   const MOTION_DELETE_TIMEOUT_MS = 30000;
-  const VOICE_SETTINGS_ENDPOINT = "/api/voice/settings";
-  const VOICE_SYNTHESIS_ENDPOINT = "/api/voice";
-  const VOICE_REQUEST_TIMEOUT_MS = 45000;
+  const TTS_STATUS_ENDPOINT = "/api/tts/status";
+  const TTS_SYNTHESIS_ENDPOINT = "/api/tts";
   const MOUTH_PARAMETER_IDS = [
     "ParamMouthOpenY",
     "PARAM_MOUTH_OPEN_Y",
@@ -141,15 +145,16 @@
     workshopBusy: false,
     deletingMotionId: null,
     generatedMotion: null,
-    voiceEnabled: false,
-    voiceGeneration: 0,
-    voiceAudio: null,
-    voiceAudioUrl: null,
-    voiceContext: null,
-    voiceSource: null,
-    voiceAnalyser: null,
-    lipSyncSamples: null,
+    ttsEnabled: false,
+    ttsStatus: null,
+    ttsStatusRevision: 0,
+    ttsPlaybackRevision: 0,
+    ttsManager: null,
     lipSyncValue: 0,
+    appliedLipSyncValue: 0,
+    peakAppliedLipSyncValue: 0,
+    lipSyncParameterIds: [],
+    lipSyncParameterReadbackVerified: false,
     lipSyncResetPending: false,
     lipSyncBinding: null,
   };
@@ -633,31 +638,36 @@
 
   function setMouthOpen(model, parameterIds, value) {
     const coreModel = model?.internalModel?.coreModel;
-    if (!coreModel?.setParameterValueById) return;
+    if (
+      !coreModel?.getParameterCount
+      || !coreModel?.getParameterIndex
+      || !coreModel?.setParameterValueByIndex
+      || !coreModel?.getParameterValueByIndex
+    ) return { value: 0, parameterIds: [] };
     const normalized = Math.min(1, Math.max(0, Number(value) || 0));
+    const count = Number(coreModel.getParameterCount());
+    const appliedValues = [];
+    const appliedParameterIds = [];
     for (const parameterId of parameterIds) {
       try {
-        coreModel.setParameterValueById(parameterId, normalized);
+        const index = Number(coreModel.getParameterIndex(parameterId));
+        // Cubism creates synthetic runtime slots for unknown IDs, so a setter
+        // not throwing is not proof that the rig owns the parameter.
+        if (!Number.isInteger(index) || index < 0 || index >= count) continue;
+        coreModel.setParameterValueByIndex(index, normalized);
+        const readback = Number(coreModel.getParameterValueByIndex(index));
+        if (!Number.isFinite(readback)) continue;
+        appliedParameterIds.push(parameterId);
+        appliedValues.push(Math.min(1, Math.max(0, readback)));
       } catch {
         // Models expose different mouth parameter IDs. Unsupported aliases are
         // intentionally ignored without touching any model-owned definitions.
       }
     }
-  }
-
-  function sampleVoiceLevel() {
-    const analyser = state.voiceAnalyser;
-    if (!analyser || !state.voiceAudio || state.voiceAudio.paused) return 0;
-    if (!state.lipSyncSamples || state.lipSyncSamples.length !== analyser.frequencyBinCount) {
-      state.lipSyncSamples = new Uint8Array(analyser.frequencyBinCount);
-    }
-    analyser.getByteFrequencyData(state.lipSyncSamples);
-    const start = Math.min(2, state.lipSyncSamples.length);
-    const end = Math.min(30, state.lipSyncSamples.length);
-    let total = 0;
-    for (let index = start; index < end; index += 1) total += state.lipSyncSamples[index];
-    const average = end > start ? total / (end - start) : 0;
-    return Math.min(1, Math.max(0, (average - 7) / 58));
+    return {
+      value: appliedValues.length ? Math.max(...appliedValues) : 0,
+      parameterIds: [...new Set(appliedParameterIds)],
+    };
   }
 
   function installLive2DLipSync(model) {
@@ -665,16 +675,19 @@
     const internalModel = model?.internalModel;
     if (!internalModel?.on) return;
     const mouthParameterIds = resolveMouthParameterIds(model);
+    state.lipSyncParameterIds = [];
+    state.lipSyncParameterReadbackVerified = false;
     const updateMouth = () => {
-      const target = sampleVoiceLevel();
-      if (!state.voiceAnalyser && !state.lipSyncResetPending) return;
-      const easing = target > state.lipSyncValue ? 0.52 : 0.28;
-      state.lipSyncValue += (target - state.lipSyncValue) * easing;
-      if (!state.voiceAnalyser && state.lipSyncValue < 0.01) {
-        state.lipSyncValue = 0;
-        state.lipSyncResetPending = false;
-      }
-      setMouthOpen(model, mouthParameterIds, state.lipSyncValue);
+      if (!state.lipSyncResetPending && state.lipSyncValue === 0) return;
+      const readback = setMouthOpen(model, mouthParameterIds, state.lipSyncValue);
+      state.lipSyncParameterIds = readback.parameterIds;
+      state.lipSyncParameterReadbackVerified = readback.parameterIds.length > 0;
+      state.appliedLipSyncValue = readback.value;
+      state.peakAppliedLipSyncValue = Math.max(
+        state.peakAppliedLipSyncValue,
+        state.appliedLipSyncValue,
+      );
+      if (state.lipSyncValue === 0) state.lipSyncResetPending = false;
     };
     internalModel.on("beforeModelUpdate", updateMouth);
     state.lipSyncBinding = { internalModel, updateMouth };
@@ -684,6 +697,9 @@
     const binding = state.lipSyncBinding;
     binding?.internalModel?.off?.("beforeModelUpdate", binding.updateMouth);
     state.lipSyncBinding = null;
+    state.lipSyncParameterIds = [];
+    state.lipSyncParameterReadbackVerified = false;
+    state.appliedLipSyncValue = 0;
   }
 
   function getMotionButton(group, index) {
@@ -1054,7 +1070,7 @@
 
     const meta = document.createElement("div");
     meta.className = "message-meta";
-    meta.append(document.createTextNode(options.initial ? "刚刚" : formatTime()));
+    meta.append(document.createTextNode(options.streaming ? "正在回复" : (options.initial ? "刚刚" : formatTime())));
     if (role === "assistant" && message.emotion && message.emotion !== "neutral") {
       const chip = document.createElement("span");
       chip.className = "emotion-chip";
@@ -1064,8 +1080,33 @@
     wrapper.appendChild(meta);
     row.appendChild(wrapper);
     dom.chatHistory.appendChild(row);
+    Object.defineProperties(message, {
+      _bubble: { value: bubble },
+      _meta: { value: meta },
+    });
     scrollChatToEnd();
     return message;
+  }
+
+  function updateStreamingAssistantMessage(message, content) {
+    if (!message || message.role !== "assistant") return;
+    message.content = String(content || "");
+    if (message._bubble) message._bubble.textContent = message.content;
+    scrollChatToEnd();
+  }
+
+  function finalizeStreamingAssistantMessage(message, content, emotion) {
+    if (!message) return;
+    updateStreamingAssistantMessage(message, content);
+    message.emotion = normalizeEmotion(emotion);
+    if (!message._meta) return;
+    message._meta.replaceChildren(document.createTextNode(formatTime()));
+    if (message.emotion !== "neutral") {
+      const chip = document.createElement("span");
+      chip.className = "emotion-chip";
+      chip.textContent = `✦ ${EMOTION_LABELS[message.emotion]}`;
+      message._meta.appendChild(chip);
+    }
   }
 
   function setChatBusy(busy) {
@@ -1149,7 +1190,58 @@
     };
   }
 
-  async function requestChatReply(message) {
+  async function readStreamingChatResponse(response, callbacks = {}) {
+    if (!response.body?.getReader) throw new Error("Streaming chat response has no readable body");
+    callbacks.onStart?.();
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let pending = "";
+    let accumulated = "";
+    let finalResult = null;
+
+    const consumeLine = (line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      let event;
+      try {
+        event = JSON.parse(trimmed);
+      } catch {
+        throw new Error("Chat stream returned invalid NDJSON");
+      }
+      if (event?.type === "delta") {
+        const delta = typeof event.text === "string" ? event.text : "";
+        if (!delta) return;
+        accumulated += delta;
+        callbacks.onDelta?.(delta, accumulated);
+        return;
+      }
+      if (event?.type === "done") {
+        finalResult = parseApiReply({
+          ...event,
+          reply: typeof event.reply === "string" && event.reply.trim() ? event.reply : accumulated,
+        });
+        callbacks.onDone?.(finalResult, accumulated);
+        return;
+      }
+      if (event?.type === "error") {
+        throw new Error(String(event?.error?.message || "Chat stream failed"));
+      }
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      pending += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const lines = pending.split(/\r?\n/u);
+      pending = lines.pop() || "";
+      lines.forEach(consumeLine);
+      if (done) break;
+    }
+    if (pending.trim()) consumeLine(pending);
+    if (!finalResult) throw new Error("Chat stream ended without a done event");
+    return finalResult;
+  }
+
+  async function requestChatReply(message, callbacks = {}) {
     const controller = new AbortController();
     const timer = window.setTimeout(
       () => controller.abort(),
@@ -1164,7 +1256,10 @@
     try {
       const response = await fetch(state.config.apiEndpoint || "/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          Accept: "application/x-ndjson, application/json",
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({
           message,
           history,
@@ -1172,8 +1267,13 @@
         signal: controller.signal,
       });
       if (!response.ok) throw new Error(`Chat API returned HTTP ${response.status}`);
+      const contentType = response.headers.get("content-type")?.toLowerCase() || "";
+      if (contentType.includes("application/x-ndjson")) {
+        return await readStreamingChatResponse(response, callbacks);
+      }
       return parseApiReply(await response.json());
     } catch (error) {
+      callbacks.onError?.(error);
       console.info("PromptSoul: chat API unavailable, switched to deterministic demo mode.", error);
       return deterministicDemoReply(message);
     } finally {
@@ -1181,135 +1281,212 @@
     }
   }
 
-  function ensureVoiceContext() {
-    if (!state.voiceContext || state.voiceContext.state === "closed") {
-      const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
-      if (!AudioContextConstructor) return null;
-      state.voiceContext = new AudioContextConstructor();
-    }
-    if (state.voiceContext.state === "suspended") {
-      state.voiceContext.resume().catch(() => undefined);
-    }
-    return state.voiceContext;
-  }
-
-  function clearVoicePlayback() {
-    const audio = state.voiceAudio;
-    if (audio) {
-      audio.onended = null;
-      audio.onerror = null;
-      audio.pause();
-      audio.removeAttribute("src");
-      audio.load();
-    }
-    state.voiceSource?.disconnect?.();
-    state.voiceAnalyser?.disconnect?.();
-    if (state.voiceAudioUrl) URL.revokeObjectURL(state.voiceAudioUrl);
-    state.voiceAudio = null;
-    state.voiceAudioUrl = null;
-    state.voiceSource = null;
-    state.voiceAnalyser = null;
-    state.lipSyncSamples = null;
-    state.lipSyncResetPending = state.lipSyncValue > 0;
-  }
-
-  function stopVoicePlayback() {
-    state.voiceGeneration += 1;
-    clearVoicePlayback();
-  }
-
-  async function refreshVoiceSettings() {
-    try {
-      const response = await fetch(VOICE_SETTINGS_ENDPOINT, { cache: "no-store" });
-      if (!response.ok) throw new Error(`Voice settings returned HTTP ${response.status}`);
-      const settings = await response.json();
-      state.voiceEnabled = settings?.mode === "voice";
-      if (!state.voiceEnabled) stopVoicePlayback();
-      return state.voiceEnabled;
-    } catch (error) {
-      state.voiceEnabled = false;
-      stopVoicePlayback();
-      console.info("PromptSoul: voice settings are unavailable.", error);
-      return false;
-    }
-  }
-
-  async function requestVoiceAudio(text, emotion, signal) {
-    const response = await fetch(VOICE_SYNTHESIS_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, emotion: normalizeEmotion(emotion) }),
-      signal,
+  function updateTtsDiagnostics(snapshot) {
+    const status = state.ttsStatus || {};
+    const diagnostics = {
+      ...snapshot,
+      mouthOpen: state.appliedLipSyncValue,
+      peakMouthOpen: state.peakAppliedLipSyncValue,
+      lipSyncParameterIds: [...state.lipSyncParameterIds],
+      mouthEvidence: state.lipSyncParameterReadbackVerified ? "parameter_readback" : "none",
+      artMeshDeformationVerified: false,
+      engineReady: Boolean(status.engineReachable),
+      voiceResolved: Boolean(status.voiceResolved),
+      speakerName: typeof status.speakerName === "string" ? status.speakerName : null,
+      styleName: typeof status.styleName === "string" ? status.styleName : null,
+      styleId: Number.isInteger(status.styleId) ? status.styleId : null,
+    };
+    window.__AITUBER_DIAGNOSTICS__ ||= {};
+    window.__AITUBER_DIAGNOSTICS__.tts = diagnostics;
+    const roots = [document.documentElement, dom.stage].filter(Boolean);
+    roots.forEach((root) => {
+      root.dataset.ttsState = diagnostics.state;
+      root.dataset.audioPlaying = String(
+        diagnostics.state === "playing"
+        && diagnostics.audioContextState === "running"
+        && diagnostics.currentTime > 0
+      );
+      root.dataset.mouthActive = String(diagnostics.mouthOpen > 0.02);
     });
-    if (response.status === 503) {
-      state.voiceEnabled = false;
-      return null;
-    }
-    if (!response.ok) throw new Error(`Voice API returned HTTP ${response.status}`);
-    return response.blob();
+    window.dispatchEvent(new CustomEvent("promptsoul:tts-state", { detail: diagnostics }));
   }
 
-  async function playVoiceReply(text, emotion) {
-    if (!state.voiceEnabled) return false;
-    const generation = state.voiceGeneration + 1;
-    state.voiceGeneration = generation;
-    clearVoicePlayback();
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), VOICE_REQUEST_TIMEOUT_MS);
+  function setTtsMouthOpen(value) {
+    state.lipSyncValue = Math.min(1, Math.max(0, Number(value) || 0));
+    state.lipSyncResetPending = state.lipSyncValue > 0 || state.lipSyncResetPending;
+  }
+
+  function resetTtsMouthState() {
+    state.lipSyncValue = 0;
+    state.lipSyncResetPending = false;
+    state.peakAppliedLipSyncValue = 0;
+    if (state.model) {
+      const readback = setMouthOpen(
+        state.model,
+        resolveMouthParameterIds(state.model),
+        0,
+      );
+      state.lipSyncParameterIds = readback.parameterIds;
+      state.lipSyncParameterReadbackVerified = readback.parameterIds.length > 0;
+      state.appliedLipSyncValue = readback.value;
+    } else {
+      state.appliedLipSyncValue = 0;
+      state.lipSyncParameterIds = [];
+      state.lipSyncParameterReadbackVerified = false;
+    }
+  }
+
+  function setTtsSpeaking(speaking) {
+    dom.stage.dataset.speaking = String(Boolean(speaking));
+    if (speaking) {
+      state.peakAppliedLipSyncValue = 0;
+      setStatus("角色正在说话 · 语音实时驱动口型");
+    } else if (state.modelReady) {
+      setStatus("角色待机中 · 和她聊聊，看看会触发什么动作");
+    }
+  }
+
+  function createTtsManager() {
+    if (state.ttsManager) return state.ttsManager;
+    state.ttsManager = new TtsPlaybackManager({
+      endpoint: TTS_SYNTHESIS_ENDPOINT,
+      onSnapshot: updateTtsDiagnostics,
+      onMouthOpen: setTtsMouthOpen,
+      onSpeakingChange: setTtsSpeaking,
+    });
+    return state.ttsManager;
+  }
+
+  async function refreshTtsStatus() {
+    const revision = ++state.ttsStatusRevision;
     try {
-      const blob = await requestVoiceAudio(text, emotion, controller.signal);
-      if (!blob || generation !== state.voiceGeneration) return false;
-      const context = ensureVoiceContext();
-      if (!context) throw new Error("Web Audio API is unavailable");
-
-      const audioUrl = URL.createObjectURL(blob);
-      const audio = new Audio(audioUrl);
-      audio.preload = "auto";
-      state.voiceAudioUrl = audioUrl;
-      state.voiceAudio = audio;
-      const analyser = context.createAnalyser();
-      analyser.fftSize = 256;
-      analyser.minDecibels = -90;
-      analyser.maxDecibels = -10;
-      analyser.smoothingTimeConstant = 0.78;
-      const source = context.createMediaElementSource(audio);
-      source.connect(analyser);
-      analyser.connect(context.destination);
-
-      state.voiceSource = source;
-      state.voiceAnalyser = analyser;
-      state.lipSyncResetPending = true;
-      audio.onended = () => {
-        if (generation !== state.voiceGeneration) return;
-        clearVoicePlayback();
-      };
-      audio.onerror = () => {
-        if (generation !== state.voiceGeneration) return;
-        clearVoicePlayback();
-        console.info("PromptSoul: generated voice audio could not be played.");
-      };
-      await audio.play();
-      return true;
-    } catch (error) {
-      if (generation === state.voiceGeneration) clearVoicePlayback();
-      if (error?.name !== "AbortError") {
-        console.info("PromptSoul: voice reply unavailable; text chat remains active.", error);
+      const response = await fetch(TTS_STATUS_ENDPOINT, { cache: "no-store" });
+      if (!response.ok) throw new Error(`TTS status returned HTTP ${response.status}`);
+      const status = await response.json();
+      if (revision !== state.ttsStatusRevision) return state.ttsStatus || status;
+      state.ttsStatus = status;
+      state.ttsEnabled = status?.provider === "aivis" && status?.ready === true;
+      if (!state.ttsEnabled) {
+        state.ttsPlaybackRevision += 1;
+        state.ttsManager?.stop();
       }
-      return false;
-    } finally {
-      window.clearTimeout(timer);
+      updateTtsDiagnostics(createTtsManager().getState());
+      return status;
+    } catch (error) {
+      if (revision !== state.ttsStatusRevision) return state.ttsStatus;
+      state.ttsEnabled = false;
+      state.ttsStatus = {
+        provider: "aivis",
+        ready: false,
+        engineReachable: false,
+        voiceResolved: false,
+      };
+      state.ttsPlaybackRevision += 1;
+      state.ttsManager?.stop();
+      updateTtsDiagnostics(createTtsManager().getState());
+      console.info("PromptSoul: local AivisSpeech is unavailable; text chat remains active.", error);
+      return state.ttsStatus;
     }
   }
 
-  function initVoice() {
-    window.addEventListener("promptsoul:voice-changed", (event) => {
-      const enabled = Boolean(event?.detail?.enabled);
-      state.voiceEnabled = enabled;
-      if (!enabled) stopVoicePlayback();
-      refreshVoiceSettings();
+  function speakCompletedReply(text, expectedRevision = null) {
+    if (
+      !state.ttsEnabled
+      || (expectedRevision !== null && expectedRevision !== state.ttsPlaybackRevision)
+    ) return [];
+    const manager = createTtsManager();
+    manager.clearStreamingText();
+    manager.appendStreamingText(text);
+    return manager.flushStreamingText();
+  }
+
+  function initTts() {
+    const manager = createTtsManager();
+    window.PromptSoulTTS = Object.freeze({
+      enqueue: (text, options) => manager.enqueue(text, options),
+      appendStreamingText: (chunk, options) => manager.appendStreamingText(chunk, options),
+      flushStreamingText: (options) => manager.flushStreamingText(options),
+      clearStreamingText: () => manager.clearStreamingText(),
+      play: (text, options) => {
+        state.ttsPlaybackRevision += 1;
+        manager.stop();
+        manager.appendStreamingText(text, options);
+        return manager.flushStreamingText(options);
+      },
+      stop: () => {
+        state.ttsPlaybackRevision += 1;
+        manager.stop();
+      },
+      clear: () => {
+        state.ttsPlaybackRevision += 1;
+        manager.clear();
+      },
+      pause: () => manager.pause(),
+      resume: () => manager.resume(),
+      unlock: () => manager.unlock(),
+      getState: () => manager.getState(),
+      refreshStatus: () => refreshTtsStatus(),
+      startAudioCapture: () => manager.startAudioCapture(),
+      stopAudioCapture: () => manager.stopAudioCapture(),
     });
-    window.addEventListener("pagehide", stopVoicePlayback);
-    refreshVoiceSettings();
+    const handleVoiceChanged = (event) => {
+      const enabled = Boolean(event?.detail?.enabled);
+      if (!enabled) {
+        state.ttsPlaybackRevision += 1;
+        manager.stop();
+      }
+      refreshTtsStatus();
+    };
+    const handleStatusRefresh = () => { void refreshTtsStatus(); };
+    const handlePreview = async (event) => {
+      const text = String(event?.detail?.text || "").trim();
+      if (!text) return;
+      const revision = ++state.ttsPlaybackRevision;
+      manager.stop();
+      const requestOptions = {
+        ...(event?.detail?.voice ? { voice: event.detail.voice } : {}),
+        ...(event?.detail?.options ? { options: event.detail.options } : {}),
+      };
+      const unlocked = await manager.unlock();
+      if (!unlocked || revision !== state.ttsPlaybackRevision) return;
+      manager.appendStreamingText(text, requestOptions);
+      manager.flushStreamingText(requestOptions);
+    };
+    const handleStop = () => {
+      state.ttsPlaybackRevision += 1;
+      manager.stop();
+    };
+    const removeTtsListeners = () => {
+      window.removeEventListener("promptsoul:voice-changed", handleVoiceChanged);
+      window.removeEventListener("promptsoul:tts-status-refresh", handleStatusRefresh);
+      window.removeEventListener("promptsoul:tts-preview", handlePreview);
+      window.removeEventListener("promptsoul:tts-stop", handleStop);
+      window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("pageshow", handlePageShow);
+    };
+    const handlePageHide = (event) => {
+      state.ttsPlaybackRevision += 1;
+      manager.stop();
+      resetTtsMouthState();
+      updateTtsDiagnostics(manager.getState());
+      if (event?.persisted) return;
+      removeTtsListeners();
+      if (state.ttsManager === manager) state.ttsManager = null;
+      if (window.PromptSoulTTS) delete window.PromptSoulTTS;
+      void manager.destroy().catch((error) => {
+        console.info("PromptSoul: TTS cleanup could not close every audio resource.", error);
+      });
+    };
+    const handlePageShow = (event) => {
+      if (event?.persisted) void refreshTtsStatus();
+    };
+    window.addEventListener("promptsoul:voice-changed", handleVoiceChanged);
+    window.addEventListener("promptsoul:tts-status-refresh", handleStatusRefresh);
+    window.addEventListener("promptsoul:tts-preview", handlePreview);
+    window.addEventListener("promptsoul:tts-stop", handleStop);
+    window.addEventListener("pagehide", handlePageHide);
+    window.addEventListener("pageshow", handlePageShow);
+    refreshTtsStatus();
   }
 
   async function sendChatMessage(rawMessage) {
@@ -1320,17 +1497,70 @@
     dom.chatInput.value = "";
     resizeComposer();
     setChatBusy(true);
-    stopVoicePlayback();
-    if (state.voiceEnabled) ensureVoiceContext();
+    const tts = createTtsManager();
+    const chatTtsRevision = ++state.ttsPlaybackRevision;
+    tts.stop();
+    const streamTtsEnabled = state.ttsEnabled;
+    if (streamTtsEnabled) void tts.unlock();
     playEmotion("thinking");
 
     const minimumTyping = new Promise((resolve) => window.setTimeout(resolve, 680));
+    let streamingMessage = null;
+    let streamedToTts = false;
+    let streamedTtsText = "";
+    let streamCompleted = false;
     try {
-      const [result] = await Promise.all([requestChatReply(message), minimumTyping]);
+      const [result] = await Promise.all([
+        requestChatReply(message, {
+          onStart: () => {
+            streamingMessage = addMessage("assistant", "", "neutral", { streaming: true });
+          },
+          onDelta: (delta, accumulated) => {
+            updateStreamingAssistantMessage(streamingMessage, accumulated);
+            dom.typingState.hidden = true;
+            if (
+              streamTtsEnabled
+              && state.ttsEnabled
+              && chatTtsRevision === state.ttsPlaybackRevision
+            ) {
+              tts.appendStreamingText(delta);
+              streamedToTts = true;
+              streamedTtsText += delta;
+            }
+          },
+          onDone: (streamResult) => {
+            streamCompleted = true;
+            if (
+              !state.ttsEnabled
+              || chatTtsRevision !== state.ttsPlaybackRevision
+            ) return;
+            if (!streamTtsEnabled) {
+              speakCompletedReply(streamResult.reply, chatTtsRevision);
+            } else {
+              if (!streamedToTts && streamResult.reply) {
+                tts.appendStreamingText(streamResult.reply);
+              } else {
+                const tail = getUnstreamedReplyTail(streamedTtsText, streamResult.reply);
+                if (tail) tts.appendStreamingText(tail);
+              }
+              tts.flushStreamingText();
+            }
+          },
+          onError: () => {
+            if (streamingMessage || streamedToTts) tts.stop();
+          },
+        }),
+        minimumTyping,
+      ]);
       setChatBusy(false);
-      addMessage("assistant", result.reply, result.emotion);
+      if (streamingMessage) {
+        finalizeStreamingAssistantMessage(streamingMessage, result.reply, result.emotion);
+        if (!streamCompleted) speakCompletedReply(result.reply, chatTtsRevision);
+      } else {
+        addMessage("assistant", result.reply, result.emotion);
+        speakCompletedReply(result.reply, chatTtsRevision);
+      }
       playEmotion(result.emotion);
-      playVoiceReply(result.reply, result.emotion);
       if (result.source === "api") {
         dom.chatMode.dataset.mode = "live";
         dom.chatMode.textContent = "API";
@@ -1343,9 +1573,13 @@
     } catch (error) {
       setChatBusy(false);
       const fallback = deterministicDemoReply(message);
-      addMessage("assistant", fallback.reply, fallback.emotion);
+      if (streamingMessage) {
+        finalizeStreamingAssistantMessage(streamingMessage, fallback.reply, fallback.emotion);
+      } else {
+        addMessage("assistant", fallback.reply, fallback.emotion);
+      }
       playEmotion(fallback.emotion);
-      playVoiceReply(fallback.reply, fallback.emotion);
+      speakCompletedReply(fallback.reply, chatTtsRevision);
       dom.chatMode.dataset.mode = "demo";
       dom.chatMode.textContent = "DEMO";
       dom.replySource.textContent = "浏览器演示回复";
@@ -1558,7 +1792,7 @@
     await loadNpcConfig();
     applyNpcConfig();
     initChat(reloadNotice?.messages);
-    initVoice();
+    initTts();
     initMotionWorkshop(reloadNotice);
     initLive2D();
   }

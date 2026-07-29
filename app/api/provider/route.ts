@@ -1,14 +1,7 @@
 import {
   getPublicProviderSettings,
   ProviderConfigurationError,
-  resetRuntimeProviderSettings,
-  setRuntimeProviderSettings,
 } from "../../../lib/server/provider-store";
-import {
-  assertLocalSameOriginMutation,
-  LocalMutationError,
-  readJsonMutation,
-} from "../../../lib/server/provider-request";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,7 +16,7 @@ function json(document: unknown, status = 200): Response {
   });
 }
 function errorResponse(error: unknown): Response {
-  if (error instanceof ProviderConfigurationError || error instanceof LocalMutationError) {
+  if (error instanceof ProviderConfigurationError) {
     return json({ error: { code: error.code, message: error.message } }, error.status);
   }
   return json({ error: { code: "internal_error", message: "Internal server error." } }, 500);
@@ -37,21 +30,22 @@ export async function GET(): Promise<Response> {
   }
 }
 
-export async function POST(request: Request): Promise<Response> {
-  try {
-    assertLocalSameOriginMutation(request);
-    const payload = await readJsonMutation(request);
-    return json(setRuntimeProviderSettings(payload));
-  } catch (error) {
-    return errorResponse(error);
-  }
+function environmentOnly(request: Request): Response {
+  void request;
+  return Response.json({
+    error: {
+      code: "provider_environment_only",
+      message: "AI Provider credentials can only be configured through server environment variables.",
+    },
+  }, {
+    status: 405,
+    headers: {
+      "Allow": "GET",
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
 }
 
-export async function DELETE(request: Request): Promise<Response> {
-  try {
-    assertLocalSameOriginMutation(request);
-    return json(resetRuntimeProviderSettings());
-  } catch (error) {
-    return errorResponse(error);
-  }
-}
+export const POST = environmentOnly;
+export const DELETE = environmentOnly;

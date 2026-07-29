@@ -7,11 +7,12 @@ import { GET as getStatus } from "../app/api/status/route";
 import { callAituberChat } from "../lib/server/aituber-chat";
 import {
   chat,
+  chatStream,
   DEFAULT_PERSONA,
+  JsonReplyStreamExtractor,
   parseModelResponse,
   validateChatPayload,
 } from "../lib/server/chat-service";
-import { resetRuntimeProviderSettings, setRuntimeProviderSettings } from "../lib/server/provider-store";
 
 const ORIGINAL_KEY = process.env.NPC_API_KEY;
 const ORIGINAL_OPENAI_KEY = process.env.OPENAI_API_KEY;
@@ -19,7 +20,6 @@ const ORIGINAL_OPENAI_KEY = process.env.OPENAI_API_KEY;
 function demoEnvironment(): void {
   delete process.env.NPC_API_KEY;
   delete process.env.OPENAI_API_KEY;
-  resetRuntimeProviderSettings();
 }
 
 afterEach(() => {
@@ -56,6 +56,26 @@ describe("chat validation and response parsing", () => {
     assert.deepEqual(parseModelResponse("普通文本"), ["普通文本", "neutral"]);
     assert.throws(() => parseModelResponse("{broken"), /malformed JSON/u);
   });
+
+  test("extracts a JSON reply incrementally without speaking protocol syntax", () => {
+    const extractor = new JsonReplyStreamExtractor();
+    const deltas = [
+      extractor.push('{"reply":"おかえり'),
+      extractor.push('なさい。今日も\\u4f1a'),
+      extractor.push('えて、うれしいです。","emotion":"happy"}'),
+    ].filter(Boolean);
+    assert.equal(deltas.join(""), "おかえりなさい。今日も会えて、うれしいです。");
+    assert.equal(extractor.finish("おかえりなさい。今日も会えて、うれしいです。"), "");
+  });
+
+  test("bounds streamed reply text before it reaches the browser or TTS", () => {
+    const extractor = new JsonReplyStreamExtractor();
+    const oversized = "🙂".repeat(4_100);
+    const delta = extractor.push(`{\"reply\":\"${oversized}\",\"emotion\":\"happy\"}`);
+    assert.equal([...delta].length, 4_000);
+    assert.equal(extractor.push("ignored"), "");
+    assert.equal(extractor.finish(oversized), "");
+  });
 });
 
 describe("chat service and routes", () => {
@@ -73,7 +93,7 @@ describe("chat service and routes", () => {
       apiKey: "provider-test-key",
       apiBase: "https://provider.test/v1",
       model: "gpt-5.6-luna",
-      source: "runtime" as const,
+      source: "environment" as const,
     };
     const result = await chat(
       { message: "你好" },
@@ -93,6 +113,38 @@ describe("chat service and routes", () => {
     assert.deepEqual(result, { reply: "角色回答", emotion: "neutral", mode: "provider" });
   });
 
+  test("streams provider reply deltas before returning the completed emotion", async () => {
+    const deltas: string[] = [];
+    const content = '{"reply":"おかえりなさい。今日も会えて、うれしいです。","emotion":"happy"}';
+    const result = await chatStream(
+      { message: "ただいま" },
+      (delta) => deltas.push(delta),
+      {
+        settings: {
+          apiKey: "provider-test-key",
+          apiBase: "https://provider.test/v1",
+          model: "test-model",
+          source: "environment",
+        },
+        persona: DEFAULT_PERSONA,
+        provider: {
+          createService: () => ({
+            chatOnce: async (_messages, stream, onPartial) => {
+              assert.equal(stream, true);
+              onPartial(content.slice(0, 22));
+              onPartial(content.slice(22, 44));
+              onPartial(content.slice(44));
+              return { blocks: [{ type: "text", text: content }], stop_reason: "end" };
+            },
+          }),
+        },
+      },
+    );
+    assert.equal(deltas.join(""), result.reply);
+    assert.equal(deltas.length > 1, true);
+    assert.equal(result.emotion, "happy");
+  });
+
   test("chat and status route responses are no-store and never expose the key", async () => {
     demoEnvironment();
     const request = new Request("http://127.0.0.1:8765/api/chat", {
@@ -107,16 +159,27 @@ describe("chat service and routes", () => {
     assert.equal(result.mode, "demo");
     assert.equal(typeof result.reply, "string");
 
-    setRuntimeProviderSettings({
-      apiKey: "status-route-secret",
-      apiBase: "https://provider.test/v1",
-      model: "gpt-5.6-luna",
-    });
+    process.env.NPC_API_KEY = "status-route-secret";
     const status = await getStatus();
     const text = await status.text();
     assert.equal(status.status, 200);
     assert.doesNotMatch(text, /status-route-secret/u);
     assert.equal((JSON.parse(text) as Record<string, unknown>).mode, "provider");
+  });
+
+  test("keeps JSON compatibility while exposing NDJSON completion events", async () => {
+    demoEnvironment();
+    const response = await postChat(new Request("http://127.0.0.1:8765/api/chat?stream=1", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/x-ndjson" },
+      body: JSON.stringify({ message: "こんにちは", history: [] }),
+    }));
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type") ?? "", /application\/x-ndjson/u);
+    const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+    assert.equal(events[0].type, "delta");
+    assert.equal(events.at(-1)?.type, "done");
+    assert.equal(events.at(-1)?.mode, "demo");
   });
 
   test("rejects non-JSON and oversized chat input with stable error envelopes", async () => {
@@ -172,7 +235,7 @@ describe("AITuber OnAir chat adapter", () => {
           apiKey: "aituber-adapter-key",
           apiBase: `http://127.0.0.1:${address.port}/v1`,
           model: "local-model",
-          source: "runtime",
+          source: "environment",
         },
         [{ role: "user", content: "你好" }],
       );

@@ -25,14 +25,19 @@ PromptSoul 基于 [shinshin86/live2d-add-motion-sample-web-ui](https://github.co
 
 Node.js 依赖及精确版本记录在 `package-lock.json` 中，并继续受各自许可证约束。
 
-## AITuber OnAir packages
+## AITuber OnAir package
 
-PromptSoul 的普通 NPC 对话与可选 TTS 分别使用：
+PromptSoul 的普通 NPC 对话使用：
 
 - [`@aituber-onair/chat`](https://github.com/shinshin86/aituber-onair/tree/main/packages/chat)，MIT License
-- [`@aituber-onair/voice`](https://github.com/shinshin86/aituber-onair/tree/main/packages/voice)，MIT License
 
 PromptSoul 保留自己的 `/api/chat` 契约、Key 隔离、动作安全编译器和 Live2D 运行时边界；精确依赖版本与完整传递依赖记录在 `package-lock.json`。
+
+## AivisSpeech and voice models
+
+- 本地日语 TTS 通过用户自行安装并运行的 [AivisSpeech Engine](https://github.com/Aivis-Project/AivisSpeech-Engine) 提供。该引擎不包含在本仓库中，并按其上游 [GNU LGPL v3](https://github.com/Aivis-Project/AivisSpeech-Engine/blob/master/LICENSE) 发布。
+- `.aivmx` 模型不会被下载、复制或提交到 PromptSoul。不同模型可能采用不同许可证；用户必须查看并遵守所选模型元数据及作者条款。
+- PromptSoul 只调用本机 Engine HTTP API，不代表引擎或模型作者对 PromptSoul、录音或衍生内容作出授权。
 
 ## Community standards
 

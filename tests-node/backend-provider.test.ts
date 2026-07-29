@@ -8,8 +8,6 @@ import {
 } from "../lib/server/provider-client";
 import {
   getProviderSettings,
-  resetRuntimeProviderSettings,
-  setRuntimeProviderSettings,
 } from "../lib/server/provider-store";
 import {
   DELETE as deleteProvider,
@@ -48,73 +46,52 @@ function localRequest(method: "POST" | "DELETE", body?: unknown, origin = "http:
 
 afterEach(() => {
   clearProviderEnvironment();
-  resetRuntimeProviderSettings();
   restoreProviderEnvironment();
 });
 
-describe("in-memory provider settings", () => {
+describe("environment-only provider settings", () => {
   test("uses gpt-5.6-luna defaults and never serializes or inspects the key", async () => {
     clearProviderEnvironment();
-    resetRuntimeProviderSettings();
-    const publicSettings = setRuntimeProviderSettings({
-      apiKey: "test-super-secret",
-      apiBase: "https://example.test/v1/",
-      model: "gpt-5.6-luna",
-    });
+    process.env.NPC_API_KEY = "test-super-secret";
+    process.env.NPC_API_BASE = "https://example.test/v1/";
+    process.env.NPC_MODEL = "gpt-5.6-luna";
     const settings = getProviderSettings();
+    const response = await getProvider();
+    const publicSettings = await response.json() as Record<string, unknown>;
 
     assert.equal(settings.apiKey, "test-super-secret");
     assert.equal(settings.apiBase, "https://example.test/v1");
     assert.equal(publicSettings.mode, "provider");
-    assert.equal(publicSettings.source, "runtime");
+    assert.equal(publicSettings.source, "environment");
     assert.equal("apiKey" in publicSettings, false);
     assert.doesNotMatch(JSON.stringify(settings), /test-super-secret/u);
     assert.doesNotMatch(inspect(settings), /test-super-secret/u);
     assert.deepEqual(Object.keys(settings).sort(), ["apiBase", "model", "source"]);
 
-    const response = await getProvider();
     assert.equal(response.status, 200);
-    assert.doesNotMatch(await response.text(), /test-super-secret/u);
+    assert.doesNotMatch(JSON.stringify(publicSettings), /test-super-secret/u);
   });
 
-  test("atomically replaces immutable snapshots and DELETE restores environment", async () => {
+  test("keeps environment snapshots immutable without retaining a runtime override", () => {
     clearProviderEnvironment();
-    process.env.NPC_API_KEY = "environment-secret";
+    process.env.NPC_API_KEY = "environment-first";
     process.env.NPC_API_BASE = "https://environment.test/v1";
-    process.env.NPC_MODEL = "environment-model";
-    resetRuntimeProviderSettings();
-
-    const firstResponse = await postProvider(localRequest("POST", {
-      apiKey: "runtime-first",
-      apiBase: "https://runtime.test/v1",
-      model: "runtime-model-1",
-    }));
-    assert.equal(firstResponse.status, 200);
+    process.env.NPC_MODEL = "environment-model-1";
     const first = getProviderSettings();
 
-    const secondResponse = await postProvider(localRequest("POST", {
-      apiKey: "runtime-second",
-      apiBase: "https://runtime.test/v1",
-      model: "runtime-model-2",
-    }));
-    assert.equal(secondResponse.status, 200);
-    assert.equal(first.apiKey, "runtime-first");
-    assert.equal(first.model, "runtime-model-1");
-    assert.equal(getProviderSettings().apiKey, "runtime-second");
+    process.env.NPC_API_KEY = "environment-second";
+    process.env.NPC_MODEL = "environment-model-2";
+    const second = getProviderSettings();
+    assert.equal(first.apiKey, "environment-first");
+    assert.equal(first.model, "environment-model-1");
+    assert.equal(second.apiKey, "environment-second");
+    assert.equal(second.model, "environment-model-2");
     assert.equal(Object.isFrozen(first), true);
-
-    const deleted = await deleteProvider(localRequest("DELETE"));
-    assert.equal(deleted.status, 200);
-    const publicSettings = await deleted.json() as Record<string, unknown>;
-    assert.equal(publicSettings.source, "environment");
-    assert.equal(publicSettings.model, "environment-model");
-    assert.equal(getProviderSettings().apiKey, "environment-secret");
-    assert.doesNotMatch(JSON.stringify(publicSettings), /environment-secret/u);
+    assert.doesNotMatch(JSON.stringify(second), /environment-second/u);
   });
 
-  test("accepts equivalent localhost and 127.0.0.1 authorities normalized by Next", async () => {
+  test("never accepts Provider credentials from the browser", async () => {
     clearProviderEnvironment();
-    resetRuntimeProviderSettings();
     const request = new Request("http://localhost:8765/api/provider", {
       method: "POST",
       headers: {
@@ -130,52 +107,10 @@ describe("in-memory provider settings", () => {
       }),
     });
     const response = await postProvider(request);
-    assert.equal(response.status, 200);
-    assert.equal(getProviderSettings().source, "runtime");
-  });
-
-  test("rejects cross-origin, non-loopback, non-JSON, and malformed settings", async () => {
-    clearProviderEnvironment();
-    resetRuntimeProviderSettings();
-
-    const crossOrigin = await postProvider(localRequest("POST", {
-      apiKey: "safe-test-key",
-      apiBase: "https://example.test/v1",
-      model: "model-1",
-    }, "https://evil.test"));
-    assert.equal(crossOrigin.status, 403);
-
-    const external = new Request("http://192.0.2.10:8765/api/provider", {
-      method: "POST",
-      headers: {
-        Host: "192.0.2.10:8765",
-        Origin: "http://192.0.2.10:8765",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ apiKey: "key", apiBase: "https://example.test/v1", model: "m" }),
-    });
-    assert.equal((await postProvider(external)).status, 403);
-
-    const plainText = new Request("http://localhost:8765/api/provider", {
-      method: "POST",
-      headers: { Host: "localhost:8765", Origin: "http://localhost:8765", "Content-Type": "text/plain" },
-      body: "{}",
-    });
-    assert.equal((await postProvider(plainText)).status, 415);
-
-    for (const payload of [
-      { apiKey: "contains space", apiBase: "https://example.test/v1", model: "m" },
-      { apiKey: "key", apiBase: "https://user:pass@example.test/v1", model: "m" },
-      { apiKey: "key", apiBase: "https://example.test/v1?token=x", model: "m" },
-      { apiKey: "key", apiBase: "http://example.test/v1", model: "m" },
-      { apiKey: "key", apiBase: "http://192.168.1.20/v1", model: "m" },
-      { apiKey: "key", apiBase: "https://example.test/v1", model: "bad model" },
-      { apiKey: "key", apiBase: "https://example.test/v1", model: "m", extra: true },
-    ]) {
-      const response = await postProvider(localRequest("POST", payload));
-      assert.equal(response.status, 400);
-      assert.equal((await response.json() as { error: { code: string } }).error.code, "invalid_provider_settings");
-    }
+    assert.equal(response.status, 405);
+    assert.equal(response.headers.get("allow"), "GET");
+    assert.equal((await response.json() as { error: { code: string } }).error.code, "provider_environment_only");
+    assert.equal((await deleteProvider(localRequest("DELETE"))).status, 405);
     assert.equal(getProviderSettings().apiKey, null);
   });
 });
@@ -185,7 +120,7 @@ describe("OpenAI-compatible Chat Completions client", () => {
     apiKey: "provider-test-secret",
     apiBase: "https://provider.test/v1",
     model: "gpt-5.6-luna",
-    source: "runtime" as const,
+    source: "environment" as const,
   };
   const messages = [{ role: "user" as const, content: "你好" }];
 

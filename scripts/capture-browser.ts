@@ -30,6 +30,7 @@ interface CapturePlan {
   height: number;
   query: string;
   readyMode: "motion" | "uitest" | "model";
+  openTtsPanel?: boolean;
 }
 
 interface PageState {
@@ -338,6 +339,14 @@ function readCapturePlans(options: Options): CapturePlan[] {
     { name: "uitest", width: 900, height: 800, query: "uitest=1", readyMode: "uitest" },
     { name: "ui-desktop", width: 1440, height: 1000, query: "", readyMode: "model" },
     { name: "ui-mobile", width: 390, height: 844, query: "", readyMode: "model" },
+    {
+      name: "ui-mobile-tts",
+      width: 390,
+      height: 844,
+      query: "",
+      readyMode: "model",
+      openTtsPanel: true,
+    },
   );
   return plans;
 }
@@ -451,6 +460,29 @@ async function capturePlan(client: CdpClient, baseUrl: string, output: string, p
   const navigation = await client.send<{ errorText?: string }>("Page.navigate", { url });
   if (navigation.errorText) throw new Error(`Navigation failed for ${plan.name}: ${navigation.errorText}`);
   const state = await waitForReady(client, plan, url);
+  if (plan.openTtsPanel) {
+    const opened = await client.send<{
+      result?: { value?: boolean };
+      exceptionDetails?: unknown;
+    }>("Runtime.evaluate", {
+      expression: `(() => {
+        const trigger = document.querySelector(".voice-trigger");
+        if (!(trigger instanceof HTMLButtonElement)) return false;
+        trigger.click();
+        return document.querySelector(".tts-debug-panel")?.closest("dialog")?.hasAttribute("open") === true;
+      })()`,
+      returnByValue: true,
+      awaitPromise: true,
+    });
+    if (opened.exceptionDetails || opened.result?.value !== true) {
+      throw new Error("Could not open the TTS diagnostic panel for browser verification");
+    }
+    await delay(250);
+    const panelState = await evaluatePageState(client);
+    if (panelState.horizontalOverflow) {
+      throw new Error(`Horizontal overflow detected in ${plan.name}`);
+    }
+  }
   await delay(250);
   const screenshot = await client.send<{ data?: string }>("Page.captureScreenshot", {
     format: "png",

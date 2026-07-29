@@ -17,7 +17,7 @@ npm ci
 npm run dev
 ```
 
-聊天在没有 API Key 时使用确定性的本地演示回复。真实 Key 只应通过本机 UI 临时提交，或在启动进程的 shell 中导出；不要写入文件。
+聊天在没有 API Key 时使用确定性的本地演示回复。真实 Key 只能在启动进程的 shell 或外部 Secret 管理中提供；不要发送到浏览器或写入文件。
 
 如果需要官方 Hiyori 演示，请先阅读 [Live2D Free Material License Agreement](https://www.live2d.com/eula/live2d-free-material-license-agreement_en.html) 与 [Live2D Cubism Sample Data Terms of Use](https://www.live2d.com/en/learn/sample/model-terms/)，确认同意后再显式运行：
 
@@ -30,7 +30,7 @@ npm run motions:validate
 ## 变更规则
 
 - 保留 Next.js/Node 一体架构，不恢复 Python 运行时依赖。
-- 聊天与语音 API Key 只能分别存在于 Node 进程内存中；禁止浏览器持久化、日志记录或接口回传。
+- LLM API Key 只能存在于 Node 服务端环境中；禁止发送到浏览器、日志记录或接口回传。AivisSpeech 在本机运行，不需要云端 TTS Key。
 - 新动作只能注册到 `PromptSoul`。不得编辑或覆盖 `Action`、`Idle`、`Tap` 等模型原有动作组。
 - 更换模型后先运行 `npm run analyze:model`，不得照搬 Hiyori 参数。
 - 不直接编辑 `models/` 下的 `.motion3.json` 或 `model3.json`。

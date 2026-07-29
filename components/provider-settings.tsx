@@ -1,10 +1,10 @@
 "use client";
 
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type PublicProviderSettings = {
   mode: "demo" | "provider";
-  source: "demo" | "environment" | "runtime";
+  source: "demo" | "environment";
   model: string;
   apiBase: string;
   hasApiKey: boolean;
@@ -20,43 +20,29 @@ const FALLBACK_SETTINGS: PublicProviderSettings = {
 
 function sourceLabel(settings: PublicProviderSettings | null): string {
   if (!settings) return "检查 AI 配置";
-  if (settings.source === "runtime") return "临时 Key 已连接";
-  if (settings.source === "environment") return "服务端 Key";
-  return "本地演示";
-}
-
-async function readJson(response: Response): Promise<Record<string, unknown>> {
-  try {
-    return (await response.json()) as Record<string, unknown>;
-  } catch {
-    return {};
-  }
-}
-
-function errorMessage(payload: Record<string, unknown>, fallback: string): string {
-  const error = payload.error;
-  if (error && typeof error === "object" && "message" in error) {
-    const message = (error as { message?: unknown }).message;
-    if (typeof message === "string" && message.trim()) return message.trim();
-  }
-  return fallback;
+  return settings.source === "environment" ? "服务端 Key" : "本地演示";
 }
 
 export function ProviderSettings() {
   const dialogRef = useRef<HTMLDialogElement>(null);
-  const keyRef = useRef<HTMLInputElement>(null);
   const [settings, setSettings] = useState<PublicProviderSettings | null>(null);
-  const [showKey, setShowKey] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState("Key 仅保存在当前 Node 服务的内存中。");
+  const [notice, setNotice] = useState("LLM API Key 只从 Node 服务端环境变量读取。");
   const [noticeState, setNoticeState] = useState<"neutral" | "success" | "error">("neutral");
 
-  async function refreshSettings() {
+  async function refresh() {
     try {
       const response = await fetch("/api/provider", { cache: "no-store" });
-      const payload = await readJson(response);
-      if (!response.ok) throw new Error(errorMessage(payload, "无法读取 Provider 配置"));
-      setSettings(payload as unknown as PublicProviderSettings);
+      const payload = await response.json() as PublicProviderSettings | { error?: { message?: string } };
+      if (!response.ok || !("mode" in payload)) {
+        throw new Error("error" in payload && payload.error?.message
+          ? payload.error.message
+          : "无法读取 Provider 配置");
+      }
+      setSettings(payload);
+      setNotice(payload.hasApiKey
+        ? "服务端环境变量已连接。浏览器无法读取或修改 Key。"
+        : "当前使用确定性的本地演示回复。配置环境变量并重启服务即可接入模型。");
+      setNoticeState(payload.hasApiKey ? "success" : "neutral");
     } catch (error) {
       setSettings(FALLBACK_SETTINGS);
       setNotice(error instanceof Error ? error.message : "无法读取 Provider 配置");
@@ -65,164 +51,62 @@ export function ProviderSettings() {
   }
 
   useEffect(() => {
-    void refreshSettings();
+    // The provider status is external server state fetched when this
+    // client-only diagnostic control mounts.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void refresh();
   }, []);
-
-  function openDialog() {
-    setNotice("Key 仅保存在当前 Node 服务的内存中，服务重启后自动清除。");
-    setNoticeState("neutral");
-    dialogRef.current?.showModal();
-  }
-
-  function closeDialog() {
-    if (keyRef.current) keyRef.current.value = "";
-    setShowKey(false);
-    dialogRef.current?.close();
-  }
-
-  async function save(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (busy) return;
-    const form = new FormData(event.currentTarget);
-    const apiKey = String(form.get("apiKey") || "").trim();
-    const apiBase = String(form.get("apiBase") || "").trim();
-    const model = String(form.get("model") || "").trim();
-    if (!apiKey) {
-      setNotice("请输入 API Key。它不会写入浏览器存储或项目文件。");
-      setNoticeState("error");
-      keyRef.current?.focus();
-      return;
-    }
-
-    setBusy(true);
-    setNotice("正在把临时配置交给本地 Node 服务…");
-    setNoticeState("neutral");
-    try {
-      const request = fetch("/api/provider", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey, apiBase, model }),
-      });
-      if (keyRef.current) keyRef.current.value = "";
-      const response = await request;
-      const payload = await readJson(response);
-      if (!response.ok) throw new Error(errorMessage(payload, "Provider 配置保存失败"));
-      setSettings(payload as unknown as PublicProviderSettings);
-      setNotice("已连接。后续聊天和动作生成将由后端调用 Provider。");
-      setNoticeState("success");
-      window.dispatchEvent(new CustomEvent("promptsoul:provider-changed"));
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Provider 配置保存失败");
-      setNoticeState("error");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function clearRuntimeKey() {
-    if (busy) return;
-    setBusy(true);
-    setNotice("正在清除当前进程中的临时 Key…");
-    setNoticeState("neutral");
-    try {
-      const response = await fetch("/api/provider", { method: "DELETE" });
-      const payload = await readJson(response);
-      if (!response.ok) throw new Error(errorMessage(payload, "临时 Key 清除失败"));
-      setSettings(payload as unknown as PublicProviderSettings);
-      if (keyRef.current) keyRef.current.value = "";
-      setNotice("临时 Key 已清除，当前配置已恢复为服务端环境变量或演示模式。");
-      setNoticeState("success");
-      window.dispatchEvent(new CustomEvent("promptsoul:provider-changed"));
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "临时 Key 清除失败");
-      setNoticeState("error");
-    } finally {
-      setBusy(false);
-    }
-  }
 
   const current = settings || FALLBACK_SETTINGS;
 
   return (
     <>
-      <button className="provider-trigger" type="button" onClick={openDialog} aria-label="打开 AI Provider 设置">
+      <button className="provider-trigger" type="button" onClick={() => dialogRef.current?.showModal()} aria-label="查看 AI Provider 状态">
         <span className="provider-trigger-dot" data-active={current.hasApiKey} aria-hidden="true" />
         <span>{sourceLabel(settings)}</span>
       </button>
 
-      <dialog className="provider-dialog" ref={dialogRef} onCancel={closeDialog}>
-        <form className="provider-form" onSubmit={save}>
+      <dialog className="provider-dialog" ref={dialogRef} onCancel={() => dialogRef.current?.close()}>
+        <div className="provider-form">
           <div className="provider-dialog-head">
             <div>
               <p className="eyebrow">AI PROVIDER</p>
-              <h2>连接你的 AI 服务</h2>
+              <h2>服务端 AI 配置</h2>
             </div>
-            <button className="provider-close" type="button" onClick={closeDialog} aria-label="关闭 AI 设置">
+            <button className="provider-close" type="button" onClick={() => dialogRef.current?.close()} aria-label="关闭 AI 状态">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
             </button>
           </div>
 
           <p className="provider-intro">
-            浏览器只负责提交一次配置；Key 随后仅存在于本机 Node 进程内存，页面无法再次读取。
+            为避免 Key 进入浏览器、录制脚本或页面内存，PromptSoul 只读取启动 Node 进程时提供的环境变量。
           </p>
 
           <div className="provider-current" data-active={current.hasApiKey}>
             <span aria-hidden="true" />
             <div>
               <strong>{sourceLabel(settings)}</strong>
-              <small>{current.model}</small>
+              <small>{current.model} · {current.apiBase}</small>
             </div>
           </div>
 
-          <label className="provider-field">
-            <span>API 地址</span>
-            <input key={`base-${current.source}-${current.apiBase}`} name="apiBase" type="url" required defaultValue={current.apiBase} autoCapitalize="none" spellCheck={false} />
-            <small>填写 OpenAI 兼容服务的 `/v1` 根地址；非本机地址必须使用 HTTPS。</small>
-          </label>
-
-          <label className="provider-field">
-            <span>模型</span>
-            <input key={`model-${current.source}-${current.model}`} name="model" required maxLength={200} defaultValue={current.model} autoCapitalize="none" spellCheck={false} />
-          </label>
-
-          <label className="provider-field">
-            <span>API Key</span>
-            <span className="provider-secret-field">
-              <input
-                ref={keyRef}
-                name="apiKey"
-                type={showKey ? "text" : "password"}
-                required
-                maxLength={4096}
-                autoComplete="off"
-                autoCapitalize="none"
-                spellCheck={false}
-                placeholder="粘贴后仅发送给本地后端"
-              />
-              <button type="button" onClick={() => setShowKey((value) => !value)}>
-                {showKey ? "隐藏" : "显示"}
-              </button>
-            </span>
-          </label>
+          <pre className="provider-env-example"><code>{`NPC_API_KEY=你的服务端Key
+NPC_API_BASE=${current.apiBase}
+NPC_MODEL=${current.model}`}</code></pre>
 
           <p className="provider-notice" data-state={noticeState} role="status" aria-live="polite">
             {notice}
           </p>
 
           <div className="provider-actions">
-            <button
-              className="provider-clear"
-              type="button"
-              onClick={clearRuntimeKey}
-              disabled={busy || current.source !== "runtime"}
-            >
-              清除临时 Key
+            <button className="provider-clear" type="button" onClick={() => void refresh()}>
+              刷新状态
             </button>
-            <button className="provider-save" type="submit" disabled={busy}>
-              {busy ? "正在连接…" : "保存并连接"}
+            <button className="provider-save" type="button" onClick={() => dialogRef.current?.close()}>
+              知道了
             </button>
           </div>
-        </form>
+        </div>
       </dialog>
     </>
   );

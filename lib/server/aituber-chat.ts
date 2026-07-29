@@ -78,6 +78,51 @@ async function readBoundedBody(response: Response): Promise<Uint8Array> {
   return output;
 }
 
+function boundedStreamingResponse(response: Response): Response {
+  const lengthHeader = response.headers.get("content-length");
+  if (lengthHeader) {
+    const declaredLength = Number(lengthHeader);
+    if (Number.isFinite(declaredLength) && declaredLength > DEFAULT_PROVIDER_RESPONSE_BYTES) {
+      void response.body?.cancel().catch(() => undefined);
+      throw invalidProviderResponse("The AI provider response was too large.");
+    }
+  }
+  if (!response.body) return response;
+
+  const reader = response.body.getReader();
+  let total = 0;
+  const bounded = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          reader.releaseLock();
+          return;
+        }
+        if (!value) return;
+        total += value.byteLength;
+        if (total > DEFAULT_PROVIDER_RESPONSE_BYTES) {
+          await reader.cancel().catch(() => undefined);
+          controller.error(invalidProviderResponse("The AI provider response was too large."));
+          return;
+        }
+        controller.enqueue(value);
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      await reader.cancel(reason).catch(() => undefined);
+    },
+  });
+  return new Response(bounded, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
 function installBoundedFetchAdapter(): void {
   const target = globalThis as GlobalWithAituberFetchAdapter;
   if (target[FETCH_ADAPTER_KEY]) return;
@@ -88,6 +133,10 @@ function installBoundedFetchAdapter(): void {
       cache: "no-store",
       redirect: "error",
     });
+    const requestBody = typeof init?.body === "string" ? init.body : "";
+    if (/"stream"\s*:\s*true/u.test(requestBody)) {
+      return boundedStreamingResponse(response);
+    }
     const body = await readBoundedBody(response);
     const responseBody = new ArrayBuffer(body.byteLength);
     new Uint8Array(responseBody).set(body);
@@ -173,6 +222,36 @@ export async function callAituberChat(
       messages.map((message) => ({ ...message })),
       false,
       () => undefined,
+    );
+    const content = completionText(completion).trim();
+    if (!content) {
+      throw invalidProviderResponse("The AI provider returned an empty response.");
+    }
+    return content;
+  } catch (error) {
+    throw mapAituberError(error);
+  }
+}
+
+export async function callAituberChatStream(
+  settings: ProviderSettings,
+  messages: readonly ChatCompletionMessage[],
+  onPartialResponse: (text: string) => void,
+  options: AituberChatOptions = {},
+): Promise<string> {
+  if (!settings.apiKey) {
+    throw new ProviderRequestError(
+      503,
+      "provider_not_configured",
+      "No AI provider is configured.",
+    );
+  }
+  try {
+    const service = options.createService?.(settings) ?? createService(settings);
+    const completion = await service.chatOnce(
+      messages.map((message) => ({ ...message })),
+      true,
+      onPartialResponse,
     );
     const content = completionText(completion).trim();
     if (!content) {
