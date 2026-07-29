@@ -50,7 +50,7 @@
     "eslint": "9.39.5",
     "eslint-config-next": "16.2.12",
     "tsx": "4.23.1",
-    "typescript": "5.9.3"
+    "typescript": "7.0.2"
   },
   "overrides": {
     "minimatch": "10.2.6",
