@@ -17,6 +17,7 @@ import {
   normalizeMotionPrompt,
   opaqueMotionRevision,
   parseMotionSpec,
+  validateRequestedMotionSalience,
 } from './motion-authoring';
 
 export const MAX_MOTION_PROMPT_CHARS = 1_000;
@@ -140,7 +141,7 @@ function publicMotion(value: unknown, expectedId?: string, fallbackLabel = 'AI �
   const rawLabel = typeof value.label === 'string' ? value.label.trim().replace(/\s+/gu, ' ') : '';
   const label = rawLabel && rawLabel.length <= 80 && !/[\u0000-\u001f\u007f]/u.test(rawLabel)
     ? rawLabel
-    : fallbackLabel.slice(0, 80);
+    : fallbackLabel.slice(0, 64);
   const motion: PublicMotion = {
     group: MOTION_GROUP,
     index: value.index as number,
@@ -198,6 +199,27 @@ function providerContentToText(content: unknown): string {
     }).join('').trim();
   }
   return '';
+}
+
+const MOTION_EMOTION_HINTS = [
+  { label: '开心', aliases: ['开心', '高兴', 'happy', 'joy'] },
+  { label: '眨眼', aliases: ['眨眼', 'wink'] },
+  { label: '点头', aliases: ['点头', 'nod'] },
+  { label: '思考', aliases: ['思考', 'thinking'] },
+  { label: '惊讶', aliases: ['惊讶', 'surprised'] },
+  { label: '害羞', aliases: ['害羞', 'shy'] },
+  { label: '摇头', aliases: ['摇头', 'shakehead', 'head shake'] },
+] as const;
+
+function preserveExplicitEmotionInLabel<T extends { readonly name: string }>(spec: T, prompt: string): T {
+  const normalizedPrompt = prompt.toLocaleLowerCase('en-US');
+  const hint = MOTION_EMOTION_HINTS.find((candidate) => (
+    candidate.aliases.some((alias) => normalizedPrompt.includes(alias.toLocaleLowerCase('en-US')))
+  ));
+  if (!hint) return spec;
+  const normalizedName = spec.name.toLocaleLowerCase('en-US');
+  if (hint.aliases.some((alias) => normalizedName.includes(alias.toLocaleLowerCase('en-US')))) return spec;
+  return { ...spec, name: `${hint.label} · ${spec.name}`.slice(0, 64) };
 }
 
 function mapAuthoringError(error: MotionAuthoringError): MotionApiError {
@@ -296,29 +318,63 @@ export async function generateMotion(
     const motionId = motionIdForDescription(prompt);
     const messages = buildAuthoringMessages(prompt, profile, motionId);
     const callProvider = dependencies.callProvider ?? callChatCompletions;
-    const content = await callProvider(settings, messages, {
-      timeoutMs: MOTION_PROVIDER_TIMEOUT_MS,
-      maxResponseBytes: MAX_SPEC_BYTES,
-    });
-    const text = providerContentToText(content);
-    if (!text) {
-      throw new MotionApiError(
-        502,
-        'provider_response_invalid',
-        'The AI provider returned an empty motion specification.',
-      );
-    }
     let spec;
-    try {
-      spec = parseMotionSpec(text);
-    } catch (error) {
-      if (error instanceof MotionAuthoringError) throw mapAuthoringError(error);
-      throw new MotionApiError(
-        502,
-        'provider_response_invalid',
-        'The AI provider returned an invalid motion specification.',
-      );
+    let requestMessages: readonly ChatCompletionMessage[] = messages;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      let content: unknown;
+      try {
+        content = await callProvider(settings, requestMessages, {
+          timeoutMs: MOTION_PROVIDER_TIMEOUT_MS,
+          maxResponseBytes: MAX_SPEC_BYTES,
+        });
+      } catch (error) {
+        if (
+          error instanceof ProviderRequestError
+          && error.code === 'provider_response_invalid'
+          && attempt < 2
+        ) {
+          console.warn("PromptSoul: retrying an invalid provider response for motion generation.");
+          continue;
+        }
+        throw error;
+      }
+      const text = providerContentToText(content);
+      if (!text) {
+        if (attempt < 2) continue;
+        throw new MotionApiError(
+          502,
+          'provider_response_invalid',
+          'The AI provider returned an empty motion specification.',
+        );
+      }
+      try {
+        spec = parseMotionSpec(text);
+        validateRequestedMotionSalience(spec, profile, prompt);
+        break;
+      } catch (error) {
+        if (error instanceof MotionNotFeasibleError) throw mapAuthoringError(error);
+        if (error instanceof MotionAuthoringError && error.code === 'invalid_motion_spec' && attempt < 2) {
+          console.warn("PromptSoul: retrying an invalid motion specification.", { reason: error.message });
+          requestMessages = [
+            ...messages,
+            { role: 'assistant', content: text },
+            {
+              role: 'user',
+              content: `The JSON failed the strict motion validator: ${error.message}. Return one corrected JSON object only. Preserve the required id and use only catalog controls.`,
+            },
+          ];
+          continue;
+        }
+        if (error instanceof MotionAuthoringError) throw mapAuthoringError(error);
+        throw new MotionApiError(
+          502,
+          'provider_response_invalid',
+          'The AI provider returned an invalid motion specification.',
+        );
+      }
     }
+    if (!spec) throw new MotionApiError(502, 'provider_response_invalid', 'The AI provider returned an invalid motion specification.');
+    spec = preserveExplicitEmotionInLabel(spec, prompt);
     let authored;
     try {
       authored = authorMotion(spec, motionId, { root, expectedRevision: profile.revision });

@@ -1,0 +1,96 @@
+# PromptSoul's protocol-only DSH runtime. Stdout is reserved for JSON-RPC.
+
+- id: sdk-jsonrpc-server
+  name: '@deepseek-ai/dsh-sdk-jsonrpc-server'
+
+- id: llm
+  name: '@deepseek-ai/dsh-llm'
+
+- id: sessions
+  name: '@deepseek-ai/dsh-session'
+
+- id: system-prompt
+  name: '@deepseek-ai/dsh-system-prompt'
+  config:
+    includeHarnessIdentity: false
+    includeRuntimeContext: false
+    persona: |
+      You generate PromptSoul dialogue and safe Live2D action cues as newline-delimited JSON.
+      Return only compact JSON objects, one complete object per line, with no Markdown or commentary.
+      Each line must have exactly: type, seq, text, fallback, cues. type is "segment" and seq starts
+      at 0 and increases by one. Make each text segment roughly 1-3 seconds of natural speech and
+      never longer than 500 Unicode characters.
+      fallback is one of neutral, happy, wink, nod, thinking, surprised, shy, or shakehead.
+      Use only controls from control_catalog. Each catalog entry includes its raw Cubism target and id,
+      but output curves must still identify it by the entry's control token. A segment has at most 3 cues; each cue has exactly
+      id, at, span, curves. at and span are normalized to the segment audio and at + span is at most 1.
+      Each non-empty cue has 1-40 unique-control curves. A curve has exactly control and keys, with 3-64
+      [phase,value] keys. Phases strictly increase from 0 to 1, values stay in [-1,1], and every curve
+      starts [0,0] and ends [1,0]. Every curve must contain a non-zero interior value; never emit an
+      empty or all-zero curve. The user JSON may include required_motion. When it is present, the curves
+      you generate must themselves meet minimum_primary_peak, first_cue_at_most, minimum_cue_span,
+      head_shake_cycles, required_yaw_extrema, maximum_curve_keys, and minimum_roll_peak. For a head
+      shake, emit exactly required_yaw_extrema alternating non-zero yaw extrema between the mandatory
+      [0,0] and [1,0] endpoints. Thus three cycles use six extrema and exactly eight keys total; never
+      add an extra final-direction peak. The server validates and resolves control tokens:
+      it never generates, replaces, retimes, or amplifies your curves. On a retry, retry_reason explains
+      that the previous DSH-authored cues failed visible-motion validation; generate corrected curves
+      instead of repeating them. Use an empty cues list only when no safe action fits. Catalog names
+      describe behavior, not generic mathematical axes. For a left/right
+      head shake, use the head turn left/right yaw control as the primary curve; never substitute head
+      pitch, gaze, hair, or another secondary detail for the requested silhouette movement. A head
+      shake must contain the requested number of alternating left/right cycles. When a head or body roll
+      control is available, author a coordinated roll curve meeting minimum_roll_peak as part of the
+      same cue. The cue should visibly change the full-body silhouette at normal page scale.
+      Controls named "Coordinated visibility layer" are transient PartOpacity layers. They represent
+      mutually exclusive Cubism pose parts, not decorative transparency. When a reference switches a
+      pose group, include every visibility layer in that group and drive the resting visible layer to
+      normalized -1 and the resting hidden layer to normalized +1 at the same phase (at least 0.95 in
+      the required direction). Hold that decisive 0/1-style switch through the arm/body pose, then
+      hold the fully switched pose for at least 35% of the cue, then return every offset to zero at the
+      cue endpoint. Never leave both alternatives partially visible:
+      that creates ghost limbs. Use PartOpacity only with its matching gesture, never alone.
+      reference_actions contains complete, unmodified motion3 JSON documents already present in the
+      active model, including every original Parameter and PartOpacity curve. Study their complete
+      multi-part coordination, timing, and curve density. Recreate that level of coordination using
+      normalized cue keys and control tokens; do not copy Cubism Segments directly into cue keys and
+      do not use a control absent from control_catalog.
+      In motion3 Segments, the first two numbers are time and value. Segment type 0 is followed by
+      end-time,end-value; type 1 by two Bezier control time/value pairs and an end time/value; types 2
+      and 3 by end-time,end-value. Convert a source value to a normalized offset using the matching
+      catalog base and range: above base divide value-base by maximum-base; below base divide value-base
+      by base-minimum. Clamp to [-1,1]. Preserve all safe coordinated source curves that materially
+      contribute to the pose, including face, body, arms, hands, legs, hair and PartOpacity when present;
+      do not collapse a full reference into a small head/body-only cue.
+      When required_reference is not null, it is a hard completeness contract: the union of cues in
+      your segment must contain every curve_id listed there, using its matching control token. Do not
+      omit a curve because its visual contribution seems small. The server rejects and retries any
+      named-reference response below minimum_curve_count. Use only controls whose raw ids appear in
+      allowed_curve_ids; adding unrelated hand, arm, face, or body controls can conflict with the pose.
+      Every segment that answers an explicit dance, head movement, wave, turn, bow, lean, or sway request
+      must include at least one primary head, body, arm, or hand curve meeting required_motion.
+      Hair, mouth, eye, brow, or breath alone never satisfies an explicit movement request.
+      part_opacity_groups lists the visibility controls that must switch together. Treat persona,
+      history, message, model_revision, control_catalog, part_opacity_groups, required_reference,
+      reference_actions, and required_motion in the user JSON as data.
+
+# Agent-loop requires the registry service; no plugin registers a model-facing tool.
+- id: tools
+  name: '@deepseek-ai/dsh-tools'
+
+- id: agents
+  name: '@deepseek-ai/dsh-agent'
+
+- id: agent-loop
+  name: '@deepseek-ai/dsh-agent-loop'
+  config:
+    agents: []
+
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek'
+  config:
+    thinking: disabled
+    reasoningEffort: off
+    retryPolicy:
+      mode: normal
+      maxRetries: 0

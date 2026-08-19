@@ -28,6 +28,7 @@ import {
   opaqueMotionRevision,
   parseMotionSpec,
   reapplySavedMotions,
+  validateRequestedMotionSalience,
 } from '../lib/server/motion-authoring';
 
 function curve(parameter: string, values: number[], target = 'Parameter') {
@@ -173,6 +174,83 @@ test('authoring writes only PromptSoul and preserves model-owned groups', () => 
   }
 });
 
+test('compiled bezier curves carry velocity through same-direction keyframes', () => {
+  const setup = fixture();
+  try {
+    const profile = loadModelProfile(setup.root);
+    const document = setup.document() as any;
+    document.duration = 2;
+    document.curves[0].keyframes = [
+      { time: 0, value: 0 },
+      { time: 0.5, value: 0.2 },
+      { time: 1, value: 0.5 },
+      { time: 1.5, value: 0.8 },
+      { time: 2, value: 0 },
+    ];
+    authorMotion(JSON.stringify(document), setup.motionId, {
+      root: setup.root,
+      expectedRevision: profile.revision,
+    });
+    const generated = JSON.parse(readFileSync(
+      path.join(setup.runtime, 'motion', `${setup.motionId}.motion3.json`),
+      'utf8',
+    )) as { Curves: Array<{ Segments: number[] }> };
+    const segments = generated.Curves[0].Segments;
+    const incomingSlope = (segments[8] - segments[6]) / (segments[7] - segments[5]);
+    const outgoingSlope = (segments[11] - segments[8]) / (segments[10] - segments[7]);
+    assert.ok(incomingSlope > 0);
+    assert.ok(outgoingSlope > 0);
+    assert.ok(Math.abs(incomingSlope - outgoingSlope) < 0.02);
+  } finally {
+    setup.cleanup();
+  }
+});
+
+test('compilation drops unavailable-direction no-op curves but rejects an all-no-op motion', () => {
+  const setup = fixture();
+  try {
+    const profile = loadModelProfile(setup.root);
+    const angle = profile.controls.find((control) => control.displayName === 'Angle X');
+    const eye = profile.controls.find((control) => control.displayName === 'Eye Open');
+    assert.ok(angle);
+    assert.ok(eye);
+    assert.equal(eye.base, eye.maximum);
+
+    const mixed = setup.document() as any;
+    mixed.curves.push({
+      control: eye.token,
+      keyframes: [
+        { time: 0, value: 0 },
+        { time: 0.5, value: 0.8 },
+        { time: 1, value: 0 },
+      ],
+    });
+    authorMotion(JSON.stringify(mixed), setup.motionId, { root: setup.root });
+    const generated = JSON.parse(readFileSync(
+      path.join(setup.runtime, 'motion', `${setup.motionId}.motion3.json`),
+      'utf8',
+    )) as { Curves: Array<{ Id: string }> };
+    assert.deepEqual(generated.Curves.map((item) => item.Id), [angle.parameterId]);
+
+    const allNoOp = setup.document() as any;
+    allNoOp.id = 'promptsoul_ai_cafebabe1234';
+    allNoOp.curves = [{
+      control: eye.token,
+      keyframes: [
+        { time: 0, value: 0 },
+        { time: 0.5, value: 0.8 },
+        { time: 1, value: 0 },
+      ],
+    }];
+    assert.throws(
+      () => authorMotion(JSON.stringify(allNoOp), allNoOp.id, { root: setup.root }),
+      MotionSpecError,
+    );
+  } finally {
+    setup.cleanup();
+  }
+});
+
 test('strict parser rejects duplicates, non-finite values, booleans, extra fields and bad endpoints', () => {
   const setup = fixture();
   try {
@@ -198,6 +276,60 @@ test('strict parser rejects duplicates, non-finite values, booleans, extra field
   }
 });
 
+test('movement salience follows gentle, ordinary and strong full-body thresholds', () => {
+  const setup = fixture();
+  try {
+    const profile = loadModelProfile(setup.root);
+    const makeSpec = (peak: number) => {
+      const document = setup.document() as any;
+      document.curves[0].keyframes[1].value = peak;
+      return parseMotionSpec(JSON.stringify(document));
+    };
+    assert.doesNotThrow(() => validateRequestedMotionSalience(makeSpec(0.45), profile, '摇头一下'));
+    assert.throws(
+      () => validateRequestedMotionSalience(makeSpec(0.64), profile, '大幅摇头三次'),
+      /too subtle at full-body scale/u,
+    );
+    assert.doesNotThrow(() => validateRequestedMotionSalience(makeSpec(0.65), profile, '大幅摇头三次'));
+    assert.doesNotThrow(() => validateRequestedMotionSalience(makeSpec(0.3), profile, '轻轻点头一下'));
+    assert.throws(
+      () => validateRequestedMotionSalience(makeSpec(0.29), profile, '轻轻点头一下'),
+      MotionSpecError,
+    );
+    assert.doesNotThrow(() => validateRequestedMotionSalience(makeSpec(0.1), profile, '眨眨眼'));
+
+    const profileWithRoll = {
+      ...profile,
+      controls: [...profile.controls, {
+        token: 'roll',
+        parameterId: 'ParamAngleZ',
+        displayName: 'Angle Z',
+        minimum: -30,
+        maximum: 30,
+        base: 0,
+      }],
+    };
+    const strongShake = makeSpec(0.8);
+    assert.throws(
+      () => validateRequestedMotionSalience(strongShake, profileWithRoll, '大幅摇头三次'),
+      /needs a visible roll curve/u,
+    );
+    assert.doesNotThrow(() => validateRequestedMotionSalience({
+      ...strongShake,
+      curves: [...strongShake.curves, {
+        control: 'roll',
+        keyframes: [
+          { time: 0, value: 0 },
+          { time: 0.5, value: 0.6 },
+          { time: 1, value: 0 },
+        ],
+      }],
+    }, profileWithRoll, '大幅摇头三次'));
+  } finally {
+    setup.cleanup();
+  }
+});
+
 test('profile excludes physics outputs, PartOpacity and opacity-looking controls', () => {
   const setup = fixture();
   try {
@@ -206,6 +338,14 @@ test('profile excludes physics outputs, PartOpacity and opacity-looking controls
     assert.equal(parameterIds.has('ParamPhysics'), false);
     assert.equal(parameterIds.has('ParamOpacity'), false);
     assert.equal(profile.partOpacityIds.has('PartFace'), true);
+    assert.deepEqual(profile.partOpacityControls, [{
+      token: 'p01',
+      partId: 'PartFace',
+      displayName: 'Coordinated visibility layer 1',
+      minimum: 0,
+      maximum: 1,
+      base: 1,
+    }]);
   } finally {
     setup.cleanup();
   }

@@ -33,6 +33,12 @@ PromptSoul 的普通 NPC 对话使用：
 
 PromptSoul 保留自己的 `/api/chat` 契约、Key 隔离、动作安全编译器和 Live2D 运行时边界；精确依赖版本与完整传递依赖记录在 `package-lock.json`。
 
+## DeepSeek Harness
+
+可选的 DSH 实时聊天后端使用 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的 TypeScript SDK、JSON-RPC runtime、DeepSeek LLM adapter 及其传递依赖。所用 `@deepseek-ai/dsh-*` 包的元数据声明为 MIT License；直接依赖精确锁定在同一 `0.1.0-rc.6` 版本族，完整解析版本见 `package-lock.json`。
+
+DeepSeek Harness 的软件许可证不授予 DeepSeek API、模型、模型输出或发送给 Provider 的内容任何额外权利。启用 `CHAT_BACKEND=dsh-realtime` 的用户仍须自行遵守所连接 DeepSeek 服务的条款、隐私政策和适用法律，并承担 API 使用费用。
+
 ## AivisSpeech and voice models
 
 - 本地日语 TTS 通过用户自行安装并运行的 [AivisSpeech Engine](https://github.com/Aivis-Project/AivisSpeech-Engine) 提供。该引擎不包含在本仓库中，并按其上游 [GNU LGPL v3](https://github.com/Aivis-Project/AivisSpeech-Engine/blob/master/LICENSE) 发布。

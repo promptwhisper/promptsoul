@@ -264,7 +264,7 @@ export function parseRecordingOptions(
   };
 }
 
-class CdpClient {
+export class CdpClient {
   private nextId = 1;
   private readonly pending = new Map<number, PendingCommand>();
   private readonly listeners = new Map<string, Set<(params: JsonObject) => void>>();
@@ -340,7 +340,7 @@ class CdpClient {
   }
 }
 
-async function startChrome(
+export async function startChrome(
   options: RecordingOptions,
   profile: string,
 ): Promise<{ child: ChildProcess; debuggerUrl: string }> {
@@ -394,7 +394,7 @@ async function startChrome(
   }
 }
 
-async function pageDebuggerUrl(browserDebuggerUrl: string): Promise<string> {
+export async function pageDebuggerUrl(browserDebuggerUrl: string): Promise<string> {
   const parsed = new URL(browserDebuggerUrl);
   const response = await fetch(`http://${parsed.hostname}:${parsed.port}/json/list`, {
     signal: AbortSignal.timeout(10_000),
@@ -406,7 +406,7 @@ async function pageDebuggerUrl(browserDebuggerUrl: string): Promise<string> {
   return page.webSocketDebuggerUrl;
 }
 
-async function evaluate<T>(client: CdpClient, expression: string): Promise<T> {
+export async function evaluate<T>(client: CdpClient, expression: string): Promise<T> {
   const response = await client.send<{
     result?: { value?: T; description?: string };
     exceptionDetails?: { text?: string; exception?: { description?: string } };
@@ -426,11 +426,13 @@ async function evaluate<T>(client: CdpClient, expression: string): Promise<T> {
   return response.result?.value as T;
 }
 
-async function clickElement(client: CdpClient, selector: string, label: string): Promise<void> {
+export async function clickElement(client: CdpClient, selector: string, label: string): Promise<void> {
   const point = await evaluate<{ x: number; y: number } | null>(client, `(() => {
     const element = document.querySelector(${JSON.stringify(selector)});
     if (!(element instanceof HTMLElement) || element.hidden || element.matches(":disabled")) return null;
-    element.scrollIntoView({ block: "center", inline: "center" });
+    if (document.body.dataset.recordingChatFocus !== "true") {
+      element.scrollIntoView({ block: "center", inline: "center" });
+    }
     const rect = element.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
@@ -685,7 +687,7 @@ async function waitForPlaybackEnd(
   throw new Error(`Timed out waiting for the LLM/TTS queue and mouth to settle: ${JSON.stringify(latest)}`);
 }
 
-async function preflightStatus(baseUrl: string): Promise<TtsStatus> {
+export async function preflightStatus(baseUrl: string): Promise<TtsStatus> {
   let response: Response;
   try {
     response = await fetch(`${baseUrl}/api/status`, {
@@ -943,7 +945,7 @@ function extractValidationFrames(
   return { count: positions.length, positionsSeconds: positions };
 }
 
-async function stopChrome(child: ChildProcess): Promise<void> {
+export async function stopChrome(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
   const exited = new Promise<boolean>((resolvePromise) => child.once("exit", () => resolvePromise(true)));
   child.kill("SIGTERM");

@@ -120,6 +120,65 @@ export default function HomePage() {
             </div>
           </aside>
 
+          <section className="motion-workshop wardrobe-workshop" id="wardrobeWorkshop" aria-labelledby="wardrobeWorkshopTitle" data-state="loading">
+            <div className="workshop-overview">
+              <div className="workshop-title-row">
+                <div><p className="eyebrow">PROMPT WARDROBE</p><h2 id="wardrobeWorkshopTitle">给角色切换服装风格</h2></div>
+                <span className="workshop-availability" id="wardrobeAvailability">检查衣橱中</span>
+              </div>
+              <p className="workshop-intro">选择已经生成的衣服立即切换，或写一段提示词交给 PromptSkin 重绘纹理。角色的 UV、绑定、物理和动作保持不变。</p>
+              <div className="workshop-guardrails" aria-label="换装安全规则">
+                <span>只替换纹理 PNG</span><span>拒绝变更 moc3 / model3</span><span>仅处理你有权使用的模型</span>
+              </div>
+            </div>
+
+            <form className="workshop-form wardrobe-form" id="wardrobeForm" aria-busy="false">
+              <div className="wardrobe-presets-block">
+                <div className="workshop-label-row">
+                  <label id="wardrobePresetsLabel">已保存衣服</label>
+                  <button className="wardrobe-refresh" id="wardrobeRefresh" type="button">刷新</button>
+                </div>
+                <div className="wardrobe-preset-list" id="wardrobePresetList" aria-labelledby="wardrobePresetsLabel" aria-live="polite">
+                  <div className="wardrobe-empty">正在读取当前模型的衣橱…</div>
+                </div>
+              </div>
+
+              <div className="workshop-field">
+                <div className="workshop-label-row"><label htmlFor="wardrobePrompt">新衣服描述</label><span id="wardrobePromptCounter">0 / 1200</span></div>
+                <p className="workshop-help" id="wardrobePromptHelp">写清服装类型、配色、材质和风格；生成完成后会自动保存为预设并穿上。</p>
+                <textarea
+                  id="wardrobePrompt"
+                  name="prompt"
+                  rows={3}
+                  maxLength={1200}
+                  aria-describedby="wardrobePromptHelp wardrobeStatus"
+                  placeholder="例如：暗黑未来学院风，黑色短外套搭配紫蓝霓虹发光线条，金属扣件，保留角色原有脸部与发型"
+                  autoComplete="off"
+                />
+              </div>
+
+              <div className="workshop-examples">
+                <span>快速风格</span>
+                <div className="workshop-example-list" id="wardrobePromptExamples">
+                  <button type="button" data-prompt="二次元暗黑未来学院风服装，黑色短外套与分层裙装，紫蓝霓虹发光线条，精致金属扣件和机能腰带；保留角色原有脸部、发型、身体比例和透明边界。">暗黑发光</button>
+                  <button type="button" data-prompt="清爽海盐夏日风服装，白色与浅蓝色水手领上衣，轻薄半透明防晒外套，少量贝壳和浪花纹样；保留角色原有脸部、发型、身体比例和透明边界。">海盐夏日</button>
+                  <button type="button" data-prompt="精致复古侦探风服装，深棕短风衣、格纹马甲、皮革肩带和黄铜细节，暖灰与酒红配色；保留角色原有脸部、发型、身体比例和透明边界。">复古侦探</button>
+                </div>
+              </div>
+
+              <div className="workshop-action-row">
+                <div className="workshop-status" id="wardrobeStatus" role="status" aria-live="polite" aria-atomic="true" data-state="loading">
+                  <span className="workshop-status-mark" aria-hidden="true" />
+                  <span className="workshop-status-copy">正在检查 PromptSkin 和当前模型…</span>
+                </div>
+                <button className="workshop-generate" id="wardrobeGenerateButton" type="submit" disabled>
+                  <span className="generate-label">生成并穿上</span>
+                  <span className="generate-indicator" aria-hidden="true"><i /><i /><i /></span>
+                </button>
+              </div>
+            </form>
+          </section>
+
           <section className="motion-workshop" id="motionWorkshop" aria-labelledby="motionWorkshopTitle" data-state="loading">
             <div className="workshop-overview">
               <div className="workshop-title-row">

@@ -401,10 +401,10 @@ async function waitForReady(client: CdpClient, plan: CapturePlan, expectedUrl: s
       latest.href === expectedUrl &&
       expectedMotion &&
       latest.status.includes(`· ${expectedMotion} ·`) &&
-      latest.status.includes("frozen@") &&
+      latest.status.includes("sampled@") &&
       latest.status.includes("active=false")
     ) {
-      throw new Error(`The requested motion was no longer active at the freeze point: ${expectedMotion}`);
+      throw new Error(`The requested motion was no longer active at the sample point: ${expectedMotion}`);
     }
     const uiTestMatch = plan.readyMode === "uitest"
       ? latest.status.match(
@@ -418,7 +418,7 @@ async function waitForReady(client: CdpClient, plan: CapturePlan, expectedUrl: s
     const actionReady = plan.readyMode === "motion"
       ? Boolean(expectedMotion) &&
         latest.status.includes(`· ${expectedMotion} ·`) &&
-        latest.status.includes("frozen@") &&
+        latest.status.includes("sampled@") &&
         latest.status.includes("started=true") &&
         latest.status.includes("playing=true") &&
         latest.status.includes("active=true")

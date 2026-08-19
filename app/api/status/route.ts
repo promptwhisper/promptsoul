@@ -1,5 +1,10 @@
 import { loadPersona } from "../../../lib/server/chat-service";
 import { getProviderSettings } from "../../../lib/server/provider-store";
+import { realtimeMetrics } from "../../../lib/server/realtime-metrics";
+import {
+  getDshRealtimeSettings,
+  toPublicDshRealtimeSettings,
+} from "../../../lib/server/realtime-settings";
 import { getAivisTtsStatus } from "../../../lib/server/aivis-service";
 
 export const runtime = "nodejs";
@@ -19,11 +24,16 @@ export async function GET(): Promise<Response> {
     const settings = getProviderSettings();
     const persona = loadPersona();
     const tts = await getAivisTtsStatus();
+    const realtime = getDshRealtimeSettings();
     return json({
       mode: settings.apiKey ? "provider" : "demo",
       model: settings.model,
       persona: persona.name,
       tts,
+      realtime: {
+        ...toPublicDshRealtimeSettings(realtime),
+        metrics: realtimeMetrics.snapshot(),
+      },
     });
   } catch {
     return json({ error: { code: "internal_error", message: "Internal server error." } }, 500);

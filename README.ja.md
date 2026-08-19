@@ -1,16 +1,19 @@
 <p align="center">
-  <img src="./docs/images/promptsoul-banner.svg" width="100%" alt="PromptSoul は会話の感情を Live2D モーションへ結び付け、安全な動作生成を行うローカル AI NPC です">
+  <img src="./docs/images/promptsoul-banner.svg" width="100%" alt="PromptSoul — ローカルで動く AI Live2D NPC">
 </p>
 
 # PromptSoul
 
 [简体中文](README.md) · [English](README.en.md) · 日本語
 
-> [中国語 README](README.md) が完全な正本です。この日本語文書と表現が異なる場合は中国語版を参照してください。[English README](README.en.md) は英語の概要です。
+PromptSoul は、AI の会話・感情・音声を Live2D の表情やモーション、口パクへつなぐ、ローカル動作の Next.js プロトタイプです。
 
-PromptSoul は、会話の感情を Live2D モーションに結び付けるローカル AI NPC プロトタイプです。Next.js が応答をストリーミングし、日本語向けの分割処理が読み上げ可能な助手原文をローカル AivisSpeech Engine へ送ります。実際に再生中の Web Audio 振幅で Live2D の口パクを駆動し、プロンプトから現在のモデルが安全に表現できるモーションも生成できます。
+主な機能:
 
-**最初に読む:** [クイックスタート](#クイックスタート) · [AI Provider](#ai-provider) · [キャラクター音声](#キャラクター音声) · [プロンプトからモーション生成](#プロンプトからモーション生成) · [モデルの変更](#モデルの変更) · [ライセンス](#ライセンス)
+- OpenAI 互換チャット、API Key 不要のデモ会話、感情連動モーション
+- 任意の DSH バックエンドによるリアルタイム会話と一時的な Live2D cue
+- 自然言語からモデルに合った安全なモーションを生成・削除
+- AivisSpeech によるローカル音声合成と、実際の音量に連動する口パク
 
 <sub>デモキャラクター: Hiyori Momose ©Live2D（モデルデータはリポジトリに含まれません）</sub>
 
@@ -18,7 +21,7 @@ PromptSoul は、会話の感情を Live2D モーションに結び付けるロ�
 
 ## クイックスタート
 
-サポート期間内の Node.js 22+ が必要です。Python は不要です。[Live2D Free Material License Agreement](https://www.live2d.com/eula/live2d-free-material-license-agreement_jp.html) と [Live2D Cubism Sample Data Terms of Use](https://www.live2d.com/learn/sample/model-terms/) を読んで同意した場合にのみ、明示的なフラグを付けて Hiyori をセットアップしてください。
+Node.js 22.19 以上が必要です。Python は不要です。Hiyori の利用規約を確認し、同意した場合のみデモモデルをセットアップしてください。
 
 ```bash
 npm ci
@@ -28,89 +31,110 @@ npm run motions:validate
 npm run dev
 ```
 
-<http://127.0.0.1:8765> を開いてください。API Key が未設定なら、チャットは決定的なローカルデモ応答を使います。
+ブラウザで <http://127.0.0.1:8765> を開きます。LLM API Key が未設定でも、決定的なローカルデモ応答で動作を確認できます。
 
-## AI Provider
+本番相当では `npm run build` の後に `npm start` で起動します。
 
-画面右上のパネルはサーバー設定の読み取り専用表示です。LLM API Key は Node サーバーの環境変数からのみ読み込み、ブラウザへ送信しません。ブラウザストレージ、Cookie、設定ファイル、ログ、レスポンス、Git にも保存しません。
+## LLM の設定
 
-常時運用ではサーバー環境変数を推奨します。
+`.env.example` を参考に `.env.local` を作成します。API Key は必ず Node サーバー側に置き、ブラウザや公開設定へ渡さないでください。
 
-```bash
-export NPC_API_KEY="your-key"
-export NPC_API_BASE="https://api.openai.com/v1"
-export NPC_MODEL="gpt-5.6-luna"
-npm run dev
+```dotenv
+NPC_API_KEY=your-key
+NPC_API_BASE=https://api.openai.com/v1
+NPC_MODEL=provider-supported-model
 ```
 
-`gpt-5.6-luna` は PromptSoul の現在の既定 Provider モデル名であり、すべての OpenAI 互換サービスで利用できるとは限りません。Provider が実際に対応するモデルへ変更してください。
+`OPENAI_API_KEY` も API Key の代替変数として利用できます。`NPC_MODEL` には、利用する OpenAI 互換 Provider が実際に対応しているモデル名を指定してください。
 
-本番起動では先に `npm run build` を実行してから `npm start` を使ってください。
+## DSH リアルタイム会話（任意）
 
-このアプリはローカルモデルを書き換え、プロセスメモリを利用するため、Node のセルフホスト環境で実行してください。Edge/Serverless ランタイム向けではありません。
+通常のチャット経路はそのまま利用できます。検証済みの発話セグメントと一時的な Live2D cue を同期させる場合は、`.env.local` に次を設定します。
 
-## キャラクター音声
+```dotenv
+CHAT_BACKEND=dsh-realtime
+DEEPSEEK_API_KEY=your-key
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DSH_MODEL=deepseek-v4-flash
+```
 
-音声はローカル [AivisSpeech Engine](https://github.com/Aivis-Project/AivisSpeech-Engine) のみを使用し、クラウド TTS Key は不要です。AivisSpeech を起動し、コハクの AIVMX モデルを自分で導入して「あまあま」スタイルを確認してください。モデルはリポジトリに含めず、利用者が各モデルのライセンスを確認する必要があります。
+各 NDJSON セグメントの本文は既存 TTS キューへ入り、cue は同じ AudioContext の時刻で実行されます。cue はブラウザのメモリだけに存在し、モーションファイルやモデルのグループを変更しません。Key と生の DSH イベントはサーバー側に残り、子プロセスへ渡す環境変数も許可リストに限定されます。`CHAT_BACKEND` を外すと従来の Provider／デモ経路へ戻ります。
 
-AivisHub に表示される Style ID `1` はモデル内部のローカル ID です。HTTP API の `speaker=1` として固定してはいけません。PromptSoul は `/speakers` から UUID・キャラクター名・スタイル名を照合し、現在の Engine が生成したグローバル Style ID を解決します。
+DSH には、現在の Cubism Parameter／PartOpacity の生 ID、範囲、基準値と、リクエストに応じて選んだ最大 3 件の完全で未省略の既存 `.motion3.json` を渡します。リアルタイム cue は最大 40 曲線、各 64 キーに対応し、Hiyori `hiyori_m08` の全 35 曲線を小さなポーズ例へ縮約せず参照できます。`.moc3`、テクスチャ、API Key は渡しません。PartOpacity は主ポーズ曲線と同じ cue でのみ使用でき、再生後に元の値へ戻ります。
+
+## ローカル音声（任意）
+
+音声にはローカルの [AivisSpeech Engine](https://github.com/Aivis-Project/AivisSpeech-Engine) を使います。クラウド TTS の API Key は不要です。
+
+AivisSpeech を起動し、使用する AIVMX 音声モデルとスタイルを導入してから、`.env.example` の設定を `.env.local` に反映します。既定は `コハク / あまあま` です。
+
+```dotenv
+TTS_PROVIDER=aivis
+AIVIS_BASE_URL=http://127.0.0.1:10101
+AIVIS_SPEAKER_UUID=5680ac39-43c9-487a-bc3e-018c0d29cc38
+AIVIS_SPEAKER_NAME=コハク
+AIVIS_STYLE_NAME=あまあま
+```
 
 ```bash
-# 既存 .env.local を上書きせず、.env.example の Aivis 設定を反映
 npm run tts:check
 npm run tts:smoke
-npm run dev
 ```
 
-公開されるサーバー境界は `GET /api/tts/status`、`GET /api/tts/voices`、`POST /api/tts` です。既存の `GET /api/status` にも `tts` フィールドが含まれます。ブラウザは同一オリジン API だけを呼び出し、Engine URL はサーバー専用です。
+`tts:check` は現在の Engine から実際のグローバル Style ID を解決し、`tts:smoke` は `artifacts/tts-smoke.wav` を生成して WAV を検証します。AivisHub に表示されるモデル内部の Style ID `1` を `speaker=1` として固定しないでください。追加設定は [.env.example](.env.example) を参照してください。
 
-分割処理は日本語の句読点向けに最適化されていますが、言語判定や翻訳はしません。既定のペルソナは利用者と同じ言語で回答するため、日本語音声が必要なら日本語で入力するかペルソナを変更してください。画面に表示する原文は TTS 用に書き換えません。
+TTS が利用できない場合も文字チャットと感情モーションは動作します。AIVMX モデルや生成 WAV は Git に追加しないでください。ローカル WAV キャッシュには会話が含まれる場合があり、`TTS_CACHE_ENABLED=false` で無効化、停止後に `.cache/aivis-tts/` を削除できます。
 
-単一の順序付きキューが `AudioBufferSourceNode → AnalyserNode → GainNode → AudioContext.destination` で再生し、GainNode から録画用 `MediaStreamAudioDestinationNode` にも分岐します。実音声 RMS をノイズゲートと平滑化に通し、実績のあるレガシーレンダラーの `beforeModelUpdate` で `model3.json` の `LipSync` パラメータを更新します。Hiyori は `ParamMouthOpenY` を使用します。TTS エラーが発生しても、テキスト会話と感情モーションは継続します。
+## プロンプト着せ替えと保存済み衣装
 
-ローカル WAV キャッシュには合成済みの会話音声が含まれます。共有端末や機密性の高い会話では `TTS_CACHE_ENABLED=false` を設定し、既存分は PromptSoul を停止してから `.cache/aivis-tts/` を削除してください。
+PromptSoul は [PromptSkin](https://github.com/promptwhisper/PromptSkin) と連携し、Prompt Wardrobe で衣装を文章から生成できます。生成済み衣装と元のテクスチャはいつでも切り替えられます。
 
-TTS と口パクに絞った無人検証クリップを収録する場合は、macOS、Linux、または WSL 上で Chrome/Chromium、ffmpeg、ffprobe、Bash、`curl`、`seq` を用意して次を実行します。
+PromptSkin バックエンドを起動し、PromptSoul の `.env.local` に次を設定します。画像 API Key は PromptSkin 側だけに置いてください。
 
-```bash
-npm run record:browser
+```dotenv
+PROMPTSKIN_API_BASE=http://127.0.0.1:8000
+PROMPTSKIN_PROVIDER=openai
+PROMPTSKIN_GENERATION_TIMEOUT_MS=720000
 ```
 
-このスクリプトは Next.js と独立した headless Chrome を起動し、`PromptSoulTTS.play()` を直接呼び出して CDP 連続フレームと同じ AudioContext の音声を収録します。チャット送信や LLM ストリームは検証しません。
+結果の `.model3.json`、`.moc3`、テクスチャ参照、画像サイズが現在のモデルと一致した場合だけ受け入れ、PNG テクスチャだけを切り替えます。UV、リグ、物理、パラメーター、モーションは変更しません。衣装は Git 対象外の `local-assets/wardrobe/` に保存されます。Hiyori はデザイン変更不可のため、この機能は自動的に無効になります。クラウド画像 Provider を使う場合、プロンプトと編集対象テクスチャがその Provider へ送信されます。
 
-収録開始前に `playing` 状態、実行中の AudioContext、進行する再生位置、非無音 RMS、Live2D の口パラメータ読取値の変化を確認します。これは音声からランタイムパラメータまでの経路を示しますが、ArtMesh 頂点の変形や見た目の分かりやすさを独立に証明するものではありません。終了時は ffprobe と一時的な 3 枚の JPEG が空でないことだけを自動確認します。フレームは作業ディレクトリと共に削除されるため、完成動画を目視確認してください。
+既存の PromptSkin ZIP も `npm run wardrobe:import -- /path/to/export.zip --name "衣装名"` でプリセット一覧へ追加できます。`--activate` を付けると導入後すぐに切り替えます。
 
-既定出力は 720×1280 の `artifacts/promptsoul-unattended.mp4` です。`OUT`、`WIDTH`、`HEIGHT`、`PORT`、`CHROME`、`FFMPEG`、`FFPROBE`、`TTS_TEXT`、`RECORD_TIMEOUT_MS`、または `npm run record:browser -- --help` に表示される CLI オプションで変更できます。AivisSpeech、設定済み音声、実再生、口パラメータ変化を確認できない場合は明示的に失敗します。全環境変数、キャッシュ、トラブルシューティングは [中国語 README](README.md#接入角色语音) を参照してください。
+## カスタムモデル
 
-## プロンプトからモーション生成
-
-AI Provider とモデルを用意すると、自然言語の説明を現在のモデルの安全範囲内の曲線へコンパイルできます。サーバーは任意コード、未知の制御、物理出力、`PartOpacity`、範囲外値、不正なキーフレームを拒否し、生成結果をプロジェクト専用の `PromptSoul` グループだけに登録します。
-
-保存された AI モーション ID は `promptsoul_ai_<12桁の16進数>` です。削除できるのは検証済みのこの形式だけで、成功時にも無視対象の定義ファイルが残ると `cleanupPending` が返る場合があります。組み込みモーションと `Action`、`Idle`、`Tap` などモデル固有グループは削除・上書きしません。現在文書化されている 7 種類の感情モーションは Hiyori 定義専用で、別モデルでは安全に使える種類が異なることがあります。
-
-## モデルの変更
+モデルのフォルダーまたは ZIP を読み込み、必ず分析してから専用モーションを作成します。
 
 ```bash
 npm run setup:model -- /path/to/model-folder-or.zip
 npm run analyze:model
-```
-
-新しいモデルはまずインポートし、モーションを設計する前に分析結果を確認して、`motion-defs/<model>.ts` をそのモデル専用に作成してください。Hiyori のパラメーターを別モデルへコピーしてはいけません。
-
-```bash
 npm run motions:generate
 npm run motions:validate
 npm run verify:browser
 ```
 
-生成モーションは必ずプロジェクト専用の `PromptSoul` グループに登録され、元の `Action`、`Idle`、`Tap` などは上書きしません。React の `components/legacy-runtime.tsx` は固定バージョンの SDK と `assets/app.js` の実績ある単一 Live2D コントローラーを読み込みます。音声統合のために第二のコントローラーは作成していません。詳細な安全ルールと Agent 手順は [AGENTS.md](AGENTS.md) を参照してください。
+Hiyori のパラメーターを別モデルへ流用しないでください。生成モーションは `PromptSoul` グループだけに追加され、モデル本来の `Action`、`Idle`、`Tap` などは上書きしません。モデル固有の定義は `motion-defs/<model>.ts` に置きます。
 
-## ライセンス
+## 検証
 
-権利者が許諾できる本リポジトリのコードと文書は [MIT License](LICENSE) で提供され、上流の MIT 著作権表示も維持されます。このライセンスは Hiyori、Cubism Core、AivisSpeech、利用者が追加した Live2D/AIVMX モデルには適用されません。Hiyori を利用する前に [Live2D Free Material License Agreement](https://www.live2d.com/eula/live2d-free-material-license-agreement_jp.html) と [Live2D Cubism Sample Data Terms of Use](https://www.live2d.com/learn/sample/model-terms/) を確認してください。Hiyori のデザインは変更できません。Hiyori を含むスクリーンショットとデモでは、`Hiyori Momose ©Live2D` と適用規約が要求する声明を画面内に見える形で保持してください。
+```bash
+npm run verify
+npm run motions:generate
+npm run motions:validate
+git diff --check
+```
 
-Live2D Cubism Core は [Live2D Proprietary Software License](https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_jp.html) の対象です。AivisSpeech Engine は本リポジトリに含まず、上流の [GNU LGPL v3](https://github.com/Aivis-Project/AivisSpeech-Engine/blob/master/LICENSE) で配布されています。AIVMX 音声モデルはモデルごとに異なるライセンスを持つ場合があります。利用者自身が選択したモデルの規約を確認し、遵守してください。PromptSoul がモデル作者に代わって再許諾することはありません。
+`npm run verify` はリポジトリ検査、型チェック、lint、テスト、`assets/app.js` の構文確認、production build を実行します。UI やモーションを変更した場合は `npm run verify:browser` も実行してください。
 
-PromptSoul は [shinshin86/live2d-add-motion-sample-web-ui](https://github.com/shinshin86/live2d-add-motion-sample-web-ui) を基に拡張しています。
+## セキュリティとライセンス
 
-第三者ライセンスの詳細は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)、コントリビューション手順は [CONTRIBUTING.md](CONTRIBUTING.md)、脆弱性報告は [SECURITY.md](SECURITY.md) を参照してください。
+- LLM API Key はサーバー環境変数だけで管理し、ブラウザ、ログ、設定ファイル、Git に保存しないでください。
+- この開発サーバーと変更系 API はローカル利用を前提としています。インターネットへ直接公開しないでください。
+- `models/`、`local-assets/`、`model.config.json`、生成モーション定義、AIVMX、生成音声はコミットしないでください。
+- Hiyori のデザインを変更せず、スクリーンショットやデモでは `Hiyori Momose ©Live2D` と必要な声明を表示してください。
+
+本リポジトリが許諾できるコードと文書は [MIT License](LICENSE) で提供されます。これは Hiyori、Cubism Core、AivisSpeech、追加した Live2D/AIVMX モデルには適用されません。DeepSeek Harness パッケージは `0.1.0-rc.6` に固定されていますが、その MIT ライセンスは DeepSeek API やモデルサービスを許諾するものではありません。
+
+Hiyori を利用する前に [Live2D Free Material License Agreement](https://www.live2d.com/eula/live2d-free-material-license-agreement_jp.html) と [Live2D Cubism Sample Data Terms of Use](https://www.live2d.com/learn/sample/model-terms/) を確認してください。音声モデルにも個別のライセンスがあるため、利用者自身で確認し遵守してください。
+
+PromptSoul は [shinshin86/live2d-add-motion-sample-web-ui](https://github.com/shinshin86/live2d-add-motion-sample-web-ui) を基に拡張しています。第三者ライセンスは [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)、開発への参加方法は [CONTRIBUTING.md](CONTRIBUTING.md)、脆弱性報告は [SECURITY.md](SECURITY.md) を参照してください。

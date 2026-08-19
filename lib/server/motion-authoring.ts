@@ -137,12 +137,24 @@ export interface ControlProfile {
   readonly base: number;
 }
 
+/** Transient Cubism part visibility; never eligible for authored motion files. */
+export interface PartOpacityControl {
+  readonly token: string;
+  readonly partId: string;
+  readonly displayName: string;
+  readonly minimum: 0;
+  readonly maximum: 1;
+  readonly base: number;
+}
+
 export interface ModelProfile {
   readonly root: string;
   readonly runtime: string;
   readonly model3Path: string;
   readonly modelStem: string;
   readonly controls: readonly ControlProfile[];
+  readonly partOpacityControls?: readonly PartOpacityControl[];
+  readonly partOpacityGroups?: readonly (readonly string[])[];
   readonly availableIds: ReadonlySet<string>;
   readonly physicsOutputs: ReadonlySet<string>;
   readonly partOpacityIds: ReadonlySet<string>;
@@ -697,6 +709,34 @@ export function loadModelProfile(root = process.cwd()): ModelProfile {
   const firstValues = new Map<string, Map<number, number>>();
   const inferredIds = new Set<string>();
   const partOpacityIds = new Set<string>();
+  const partOpacityFirstValues = new Map<string, Map<number, number>>();
+  const partOpacityGroups: string[][] = [];
+  const poseFiles: string[] = [];
+  const poseReference = references.Pose;
+  if (typeof poseReference === 'string') {
+    const posePath = resolveInside(runtime, poseReference, 'pose');
+    const pose = readJson(posePath, MAX_REFERENCE_MOTION_BYTES, 'pose3.json');
+    if (!isObject(pose) || !Array.isArray(pose.Groups)) {
+      throw new ModelAnalysisError('invalid pose3.json groups');
+    }
+    poseFiles.push(posePath);
+    for (const rawGroup of pose.Groups) {
+      if (!Array.isArray(rawGroup)) throw new ModelAnalysisError('invalid pose3.json group');
+      const ids = rawGroup.map((entry) => (
+        isObject(entry) && typeof entry.Id === 'string' ? entry.Id : ''
+      ));
+      if (ids.length < 2 || ids.some((id) => !id) || new Set(ids).size !== ids.length) {
+        throw new ModelAnalysisError('invalid pose3.json part group');
+      }
+      ids.forEach((id, index) => {
+        partOpacityIds.add(id);
+        if (!partOpacityFirstValues.has(id)) {
+          partOpacityFirstValues.set(id, new Map([[index === 0 ? 1 : 0, 1]]));
+        }
+      });
+      partOpacityGroups.push(ids);
+    }
+  }
   for (const motionPath of referenceFiles) {
     const motion = readJson(motionPath, MAX_REFERENCE_MOTION_BYTES, 'reference motion');
     if (!isObject(motion) || !Array.isArray(motion.Curves)) {
@@ -706,6 +746,13 @@ export function loadModelProfile(root = process.cwd()): ModelProfile {
       if (!isObject(rawCurve) || typeof rawCurve.Id !== 'string') continue;
       if (rawCurve.Target === 'PartOpacity') {
         partOpacityIds.add(rawCurve.Id);
+        const { points } = curvePoints(rawCurve, path.basename(motionPath));
+        if (points.length) {
+          const value = Math.min(1, Math.max(0, points[0].value));
+          const counts = partOpacityFirstValues.get(rawCurve.Id) ?? new Map<number, number>();
+          counts.set(value, (counts.get(value) ?? 0) + 1);
+          partOpacityFirstValues.set(rawCurve.Id, counts);
+        }
         continue;
       }
       if (rawCurve.Target !== 'Parameter') continue;
@@ -760,14 +807,31 @@ export function loadModelProfile(root = process.cwd()): ModelProfile {
       base: basePose.get(parameterId)!,
     };
   });
+  const partOpacityControls = [...partOpacityIds].sort().map((partId, offset): PartOpacityControl => {
+    const counts = partOpacityFirstValues.get(partId);
+    const base = counts?.size
+      ? [...counts.entries()].sort((left, right) => right[1] - left[1])[0][0]
+      : 1;
+    return {
+      token: `p${String(offset + 1).padStart(2, '0')}`,
+      partId,
+      // The token is sufficient for DSH; do not disclose raw rig identifiers.
+      displayName: `Coordinated visibility layer ${offset + 1}`,
+      minimum: 0,
+      maximum: 1,
+      base,
+    };
+  });
   const revisionHash = createHash('sha256').update(model3Bytes);
-  updateDigestWithFiles(revisionHash, [...referenceFiles, ...cdiFiles, ...physicsFiles]);
+  updateDigestWithFiles(revisionHash, [...referenceFiles, ...cdiFiles, ...physicsFiles, ...poseFiles]);
   return {
     root: rootPath,
     runtime,
     model3Path,
     modelStem: path.basename(model3Path, '.model3.json'),
     controls,
+    partOpacityControls,
+    partOpacityGroups,
     availableIds,
     physicsOutputs,
     partOpacityIds,
@@ -817,8 +881,10 @@ export function buildAuthoringMessages(
     'You design one safe, readable Live2D action using only the opaque controls listed below.',
     'Return one JSON object and no markdown. Use each control at most once.',
     'Values are normalized: -1 and 1 mean the observed safe extremes, 0 means the resting pose.',
-    'Match the requested intensity. For large, strong, exaggerated, or clearly visible actions, drive the primary head/body controls to about 0.65..0.9 of their normalized safe range, coordinate several relevant face/body controls, and reserve exactly -1 or 1 for brief intentional peaks only.',
-    'For ordinary requests, prefer moderate 0.3..0.65 values. Keep subtle values below 0.3 only when the description explicitly asks for a small or gentle action.',
+    'Match the requested intensity. For large, strong, exaggerated, or clearly visible actions, drive the primary head/body/arm controls to about 0.7..0.95 of their normalized safe range, coordinate several relevant face/body controls, and reserve exactly -1 or 1 for brief intentional peaks only.',
+    'For ordinary movement requests, prefer readable 0.45..0.7 values. Even gentle movement should normally reach 0.3..0.5; use smaller values only for secondary details.',
+    'Like the reference Hiyori motions, give a primary movement enough time to read: normally 2..4 seconds unless the requested action is intentionally sudden.',
+    'For a visible head shake, combine repeated left/right yaw with coordinated head roll and opposite body roll when those catalog controls exist; yaw alone can be hard to see on a full-body Live2D model.',
     'Make the main silhouette change readable at full-body scale; do not rely only on eyes, brows, mouth, or values below 0.2 for a strong action.',
     'Every curve needs 3-24 keyframes, starts at time/value 0/0, ends exactly at duration/value 0, and has a non-zero middle value.',
     'Use 1-24 curves and at most 256 keyframes total. Do not invent controls.',
@@ -834,6 +900,69 @@ export function buildAuthoringMessages(
   // by supplying a valid-looking ID with an invalid description.
   void generatedId;
   return [{ role: 'system', content: system }, { role: 'user', content: user }];
+}
+
+const MOTION_DESCRIPTION_MOVEMENT = /dance|shake|nod|wave|turn|spin|bow|lean|tilt|sway|jump|look up|look down|踊|摇头|搖頭|点头|點頭|挥手|揮手|招手|转圈|轉圈|转身|轉身|鞠躬|后仰|後仰|歪头|歪頭|侧头|側頭|低头|低頭|抬头|抬頭|仰头|仰頭|摆动|擺動|晃动|晃動|跳舞/iu;
+const MOTION_DESCRIPTION_STRONG = /large|big|strong|dramatic|exaggerated|intense|明显|明顯|大幅|强烈|強烈|夸张|誇張|用力|剧烈|劇烈|大きく|激しく/iu;
+const MOTION_DESCRIPTION_GENTLE = /gentle|slight|subtle|soft|slowly|轻轻|輕輕|轻微|輕微|小幅|慢慢|柔和|軽く|少し|ゆっくり/iu;
+
+function isPrimaryAuthoringControl(control: ControlProfile): boolean {
+  const description = `${control.parameterId} ${control.displayName}`.normalize('NFKC');
+  if (/hair|mouth|eye|brow|breath|cheek|tongue|髪|发|髮|口|目|眼|眉|呼吸/iu.test(description)) return false;
+  return /(?:ParamAngle[XYZ]|ParamBodyAngle[XYZ]|ParamArm|ParamHand|angle\s*[xyz]|head|body|arm|hand|yaw|pitch|roll|turn|tilt|rotate|shoulder|头|頭|首|身体|身體|体|體|腕|手|胴)/iu.test(description);
+}
+
+export function validateRequestedMotionSalience(
+  spec: NormalizedMotionSpec,
+  profile: ModelProfile,
+  description: string,
+): void {
+  const normalized = description.trim().normalize('NFKC');
+  if (!MOTION_DESCRIPTION_MOVEMENT.test(normalized)) return;
+  const primaryTokens = new Set(
+    profile.controls.filter(isPrimaryAuthoringControl).map((control) => control.token),
+  );
+  if (!primaryTokens.size) return;
+  const requiredPeak = MOTION_DESCRIPTION_STRONG.test(normalized)
+    ? 0.65
+    : MOTION_DESCRIPTION_GENTLE.test(normalized)
+      ? 0.3
+      : 0.45;
+  let peak = 0;
+  for (const curve of spec.curves) {
+    if (!primaryTokens.has(curve.control)) continue;
+    for (const keyframe of curve.keyframes.slice(1, -1)) {
+      peak = Math.max(peak, Math.abs(keyframe.value));
+    }
+  }
+  if (peak + EPSILON < requiredPeak) {
+    throw new MotionSpecError(
+      `requested movement is too subtle at full-body scale; a primary head/body/arm curve must reach at least ${requiredPeak}`,
+    );
+  }
+  if (/shake|摇头|搖頭|首を振/iu.test(normalized)) {
+    const rollTokens = new Set(profile.controls.filter((control) => {
+      const label = `${control.parameterId} ${control.displayName}`.normalize('NFKC');
+      return /ParamAngleZ|ParamBodyAngleZ|(?:head|body).{0,16}(?:roll|tilt)|(?:roll|tilt).{0,16}(?:head|body)|倾斜|傾斜/iu.test(label);
+    }).map((control) => control.token));
+    if (rollTokens.size) {
+      let rollPeak = 0;
+      for (const curve of spec.curves) {
+        if (!rollTokens.has(curve.control)) continue;
+        for (const keyframe of curve.keyframes.slice(1, -1)) {
+          rollPeak = Math.max(rollPeak, Math.abs(keyframe.value));
+        }
+      }
+      const requiredRollPeak = MOTION_DESCRIPTION_STRONG.test(normalized)
+        ? 0.6
+        : MOTION_DESCRIPTION_GENTLE.test(normalized) ? 0.3 : 0.45;
+      if (rollPeak + EPSILON < requiredRollPeak) {
+        throw new MotionSpecError(
+          `head shake needs a visible roll curve of at least ${requiredRollPeak} in addition to yaw`,
+        );
+      }
+    }
+  }
 }
 
 function validateCompiledSpec(spec: CompiledMotionSpec, profile: ModelProfile, expectedId: string): void {
@@ -902,7 +1031,7 @@ function compileSpec(spec: NormalizedMotionSpec, profile: ModelProfile, expected
   if (spec.id !== validatedId) throw new MotionSpecError('motion id does not match the server-assigned id');
   const controls = new Map(profile.controls.map((control) => [control.token, control]));
   const duration = snap(spec.duration);
-  const curves = spec.curves.map((curve, curveIndex): CompiledCurveSpec => {
+  const curves = spec.curves.map((curve, curveIndex): CompiledCurveSpec | null => {
     const control = controls.get(curve.control);
     if (!control) throw new MotionSpecError(`$.curves[${curveIndex}].control is not in the catalog`);
     const keyframes = curve.keyframes.map((keyframe): KeyframeSpec => {
@@ -920,8 +1049,17 @@ function compileSpec(spec: NormalizedMotionSpec, profile: ModelProfile, expected
     if (Math.abs(keyframes[keyframes.length - 1].time - duration) > EPSILON) {
       throw new MotionSpecError(`$.curves[${curveIndex}] does not end at snapped duration`);
     }
-    return { parameter: control.parameterId, keyframes };
-  });
+    const compiled = { parameter: control.parameterId, keyframes };
+    const movesAwayFromBase = compiled.keyframes
+      .slice(1, -1)
+      .some((keyframe) => Math.abs(keyframe.value - control.base) > EPSILON);
+    // A control may have travel in only one direction (for example, an eye-open
+    // parameter whose observed base is already its maximum). Provider output in
+    // that unavailable direction safely collapses to the base pose. Ignore only
+    // that curve; validateCompiledSpec still rejects a motion if every curve is a
+    // no-op, and all remaining curves continue through the full safety checks.
+    return movesAwayFromBase ? compiled : null;
+  }).filter((curve): curve is CompiledCurveSpec => curve !== null);
   const compiled = {
     id: spec.id,
     name: spec.name,
@@ -984,10 +1122,43 @@ function parseCompiledSpec(raw: string | Uint8Array): CompiledMotionSpec {
   return { id, name, duration, fadeIn, fadeOut, curves };
 }
 
+function monotoneTangents(keyframes: readonly KeyframeSpec[]): number[] {
+  const tangents = keyframes.map(() => 0);
+  if (keyframes.length < 3) return tangents;
+  const secants = keyframes.slice(1).map((right, index) => {
+    const left = keyframes[index];
+    return (right.value - left.value) / (right.time - left.time);
+  });
+  for (let index = 1; index < keyframes.length - 1; index += 1) {
+    const leftSlope = secants[index - 1];
+    const rightSlope = secants[index];
+    if (
+      Math.abs(leftSlope) <= EPSILON
+      || Math.abs(rightSlope) <= EPSILON
+      || leftSlope * rightSlope <= 0
+    ) {
+      tangents[index] = 0;
+      continue;
+    }
+    const leftSpan = keyframes[index].time - keyframes[index - 1].time;
+    const rightSpan = keyframes[index + 1].time - keyframes[index].time;
+    const leftWeight = 2 * rightSpan + leftSpan;
+    const rightWeight = rightSpan + 2 * leftSpan;
+    tangents[index] = (leftWeight + rightWeight)
+      / ((leftWeight / leftSlope) + (rightWeight / rightSlope));
+  }
+  return tangents;
+}
+
 function motionDocument(spec: CompiledMotionSpec): JsonObject {
   let totalSegments = 0;
   let totalPoints = 0;
   const curves = spec.curves.map((curve) => {
+    // A zero tangent at every authored keyframe makes multi-keyframe actions
+    // visibly pause between poses. Monotone cubic tangents carry velocity
+    // through same-direction keys while still easing at true extrema and at
+    // the resting endpoints, so generated motions remain bounded and fluid.
+    const tangents = monotoneTangents(curve.keyframes);
     const segments: number[] = [curve.keyframes[0].time, curve.keyframes[0].value];
     for (let index = 1; index < curve.keyframes.length; index += 1) {
       const left = curve.keyframes[index - 1];
@@ -995,8 +1166,10 @@ function motionDocument(spec: CompiledMotionSpec): JsonObject {
       const delta = (right.time - left.time) / 3;
       segments.push(
         1,
-        Number((left.time + delta).toFixed(3)), left.value,
-        Number((right.time - delta).toFixed(3)), right.value,
+        Number((left.time + delta).toFixed(3)),
+        Number((left.value + tangents[index - 1] * delta).toFixed(3)),
+        Number((right.time - delta).toFixed(3)),
+        Number((right.value - tangents[index] * delta).toFixed(3)),
         right.time, right.value,
       );
       totalSegments += 1;

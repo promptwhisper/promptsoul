@@ -3,7 +3,10 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, test } from "node:test";
 
-import { TtsPlaybackManager } from "../lib/shared/browser-tts";
+import {
+  TtsPlaybackManager,
+  type TtsPlaybackManagerOptions,
+} from "../lib/shared/browser-tts";
 
 function wavResponse(): Response {
   const header = Uint8Array.from([
@@ -33,10 +36,14 @@ class FakeSource {
   onended: (() => void) | null = null;
   started = false;
   stopped = false;
+  startAt: number | null = null;
 
   connect(): void {}
   disconnect(): void {}
-  start(): void { this.started = true; }
+  start(when = 0): void {
+    this.started = true;
+    this.startAt = when;
+  }
   stop(): void { this.stopped = true; }
   finish(): void { this.onended?.(); }
 }
@@ -114,6 +121,7 @@ function createManager(
   fetchImpl: typeof fetch,
   frames = new FakeFrames(),
   mouthValues: number[] = [],
+  options: Partial<TtsPlaybackManagerOptions> = {},
 ): TtsPlaybackManager {
   return new TtsPlaybackManager({
     endpoint: "/api/tts",
@@ -122,10 +130,209 @@ function createManager(
     requestAnimationFrameImpl: frames.request,
     cancelAnimationFrameImpl: frames.cancel,
     onMouthOpen: (value) => mouthValues.push(value),
+    ...options,
   });
 }
 
 describe("TtsPlaybackManager", () => {
+  test("emits tagged lifecycle events around an AudioContext-scheduled segment", async () => {
+    const context = new FakeAudioContext();
+    context.currentTime = 12.5;
+    const frames = new FakeFrames();
+    const requestBodies: unknown[] = [];
+    const events: Array<{
+      type: string;
+      itemId: number;
+      tag: unknown;
+      startAt?: number;
+      duration?: number;
+    }> = [];
+    const manager = createManager(
+      context,
+      (async (_url, init) => {
+        requestBodies.push(JSON.parse(String(init?.body)));
+        return wavResponse();
+      }) as typeof fetch,
+      frames,
+      [],
+      {
+        onSegmentQueued: (event) => events.push({ type: "queued", ...event }),
+        onSegmentScheduled: (event) => events.push({ type: "scheduled", ...event }),
+        onSegmentStarted: (event) => events.push({ type: "started", ...event }),
+        onSegmentEnded: (event) => events.push({ type: "ended", ...event }),
+        onSegmentCancelled: (event) => events.push({ type: "cancelled", ...event }),
+      },
+    );
+    const tag = { turnId: "turn-7", segmentSeq: 3 };
+
+    const itemId = manager.enqueue("同期します。", {}, tag);
+    await settle();
+
+    assert.equal(typeof itemId, "number");
+    assert.deepEqual(requestBodies, [{ text: "同期します。" }]);
+    assert.equal(context.sources[0].startAt, 12.55);
+    assert.deepEqual(events, [
+      { type: "queued", itemId, tag },
+      { type: "scheduled", itemId, tag, startAt: 12.55, duration: 1 },
+    ]);
+
+    frames.run();
+    assert.equal(events.some((event) => event.type === "started"), false);
+    context.currentTime = 12.55;
+    frames.run();
+    frames.run();
+    assert.equal(events.filter((event) => event.type === "started").length, 1);
+    assert.deepEqual(events.at(-1), {
+      type: "started",
+      itemId,
+      tag,
+      startAt: 12.55,
+      duration: 1,
+    });
+
+    context.sources[0].finish();
+    manager.stop();
+    await settle();
+    assert.deepEqual(events.at(-1), {
+      type: "ended",
+      itemId,
+      tag,
+      startAt: 12.55,
+      duration: 1,
+    });
+    assert.equal(events.some((event) => event.type === "cancelled"), false);
+    await manager.destroy();
+    assert.equal(events.some((event) => event.type === "cancelled"), false);
+  });
+
+  test("stopping before the scheduled clock time never emits started", async () => {
+    const context = new FakeAudioContext();
+    const frames = new FakeFrames();
+    const events: string[] = [];
+    const manager = createManager(
+      context,
+      (async () => wavResponse()) as typeof fetch,
+      frames,
+      [],
+      {
+        onSegmentScheduled: () => events.push("scheduled"),
+        onSegmentStarted: () => events.push("started"),
+        onSegmentCancelled: () => events.push("cancelled"),
+      },
+    );
+
+    manager.enqueue("まだ始まりません。", {}, "early-stop");
+    await settle();
+    assert.deepEqual(events, ["scheduled"]);
+    manager.stop();
+    context.currentTime = 1;
+    frames.run();
+    assert.deepEqual(events, ["scheduled", "cancelled"]);
+    await manager.destroy();
+  });
+
+  test("stop cancels every outstanding tagged item exactly once", async () => {
+    const context = new FakeAudioContext();
+    const cancelled: Array<{ itemId: number; tag: unknown }> = [];
+    const manager = createManager(
+      context,
+      (async () => wavResponse()) as typeof fetch,
+      new FakeFrames(),
+      [],
+      { onSegmentCancelled: (event) => cancelled.push(event) },
+    );
+    const ids = [
+      manager.enqueue("一つ目です。", {}, "one"),
+      manager.enqueue("二つ目です。", {}, "two"),
+      manager.enqueue("三つ目です。", {}, "three"),
+    ];
+    await settle();
+
+    manager.stop();
+    manager.stop();
+    await manager.destroy();
+
+    assert.deepEqual(cancelled, [
+      { itemId: ids[0], tag: "one" },
+      { itemId: ids[1], tag: "two" },
+      { itemId: ids[2], tag: "three" },
+    ]);
+  });
+
+  test("cancelPending lets the current audio end while cancelling queued work", async () => {
+    const context = new FakeAudioContext();
+    const cancelled: Array<{ itemId: number; tag: unknown }> = [];
+    const ended: Array<{ itemId: number; tag: unknown }> = [];
+    const manager = createManager(
+      context,
+      (async () => wavResponse()) as typeof fetch,
+      new FakeFrames(),
+      [],
+      {
+        onSegmentCancelled: (event) => cancelled.push(event),
+        onSegmentEnded: (event) => ended.push(event),
+      },
+    );
+    const currentId = manager.enqueue("今の音声です。", {}, "current");
+    const pendingId = manager.enqueue("次の音声です。", {}, "pending");
+    const laterId = manager.enqueue("その次です。", {}, "later");
+    await settle();
+
+    manager.cancelPending();
+    assert.equal(context.sources.length, 1);
+    assert.equal(context.sources[0].stopped, false);
+    assert.equal(manager.getState().state, "playing");
+    assert.equal(manager.getState().queueLength, 1);
+    assert.deepEqual(cancelled, [
+      { itemId: pendingId, tag: "pending" },
+      { itemId: laterId, tag: "later" },
+    ]);
+
+    context.sources[0].finish();
+    await settle();
+    assert.equal(context.sources.length, 1);
+    assert.equal(manager.getState().state, "idle");
+    assert.deepEqual(ended.map(({ itemId, tag }) => ({ itemId, tag })), [
+      { itemId: currentId, tag: "current" },
+    ]);
+    await manager.destroy();
+  });
+
+  test("exposes the exact reusable AudioContext clock when it exists", async () => {
+    const context = new FakeAudioContext();
+    context.currentTime = 42.125;
+    const manager = createManager(context, (async () => wavResponse()) as typeof fetch);
+
+    assert.equal(manager.getAudioContextTime(), null);
+    assert.equal(await manager.unlock(), true);
+    assert.equal(manager.getAudioContextTime(), 42.125);
+    await manager.destroy();
+    assert.equal(manager.getAudioContextTime(), null);
+  });
+
+  test("destroy cancels queued and playing tagged items exactly once", async () => {
+    const context = new FakeAudioContext();
+    const cancelled: Array<{ itemId: number; tag: unknown }> = [];
+    const manager = createManager(
+      context,
+      (async () => wavResponse()) as typeof fetch,
+      new FakeFrames(),
+      [],
+      { onSegmentCancelled: (event) => cancelled.push(event) },
+    );
+    const firstId = manager.enqueue("再生中です。", {}, { seq: 0 });
+    const secondId = manager.enqueue("待機中です。", {}, { seq: 1 });
+    await settle();
+
+    await manager.destroy();
+    await manager.destroy();
+
+    assert.deepEqual(cancelled, [
+      { itemId: firstId, tag: { seq: 0 } },
+      { itemId: secondId, tag: { seq: 1 } },
+    ]);
+  });
+
   test("plays queued WAV audio in order without overlap and advances only on onended", async () => {
     const context = new FakeAudioContext();
     const requested: string[] = [];
@@ -205,24 +412,40 @@ describe("TtsPlaybackManager", () => {
   test("a failed request does not block the next queued sentence", async () => {
     const context = new FakeAudioContext();
     let calls = 0;
-    const manager = createManager(context, (async () => {
-      calls += 1;
-      return calls === 1
-        ? new Response(JSON.stringify({ error: { code: "TTS_ENGINE_UNAVAILABLE" } }), {
-          status: 503,
-          headers: { "Content-Type": "application/json" },
-        })
-        : wavResponse();
-    }) as typeof fetch);
-    manager.enqueue("失敗します。");
-    manager.enqueue("続けます。");
+    const cancelled: Array<{ itemId: number; tag: unknown }> = [];
+    const ended: Array<{ itemId: number; tag: unknown }> = [];
+    const manager = createManager(
+      context,
+      (async () => {
+        calls += 1;
+        return calls === 1
+          ? new Response(JSON.stringify({ error: { code: "TTS_ENGINE_UNAVAILABLE" } }), {
+            status: 503,
+            headers: { "Content-Type": "application/json" },
+          })
+          : wavResponse();
+      }) as typeof fetch,
+      new FakeFrames(),
+      [],
+      {
+        onSegmentCancelled: (event) => cancelled.push(event),
+        onSegmentEnded: (event) => ended.push(event),
+      },
+    );
+    const failedId = manager.enqueue("失敗します。", {}, "failed");
+    const recoveredId = manager.enqueue("続けます。", {}, "recovered");
     await settle();
     assert.equal(calls, 2);
     assert.equal(context.sources.length, 1);
     assert.equal(manager.getState().state, "playing");
     assert.equal(manager.getState().lastError, null);
+    assert.deepEqual(cancelled, [{ itemId: failedId, tag: "failed" }]);
     context.sources[0].finish();
     await settle();
+    assert.deepEqual(ended.map(({ itemId, tag }) => ({ itemId, tag })), [
+      { itemId: recoveredId, tag: "recovered" },
+    ]);
+    assert.deepEqual(cancelled, [{ itemId: failedId, tag: "failed" }]);
     await manager.destroy();
   });
 
@@ -347,6 +570,7 @@ describe("TtsPlaybackManager", () => {
     await settle();
     assert.equal(manager.getState().state, "playing");
     context.analyser.level = 0.1;
+    context.currentTime = 0.05;
     frames.run();
     assert.ok(manager.getState().mouthOpen > 0);
 
@@ -376,6 +600,7 @@ describe("TtsPlaybackManager", () => {
     assert.equal(mouthValues.length, 0);
     manager.enqueue("口型を確認します。");
     await settle();
+    context.currentTime = 0.05;
     frames.run();
     assert.ok((mouthValues.at(-1) || 0) > 0);
     assert.ok(manager.getState().currentRms > 0);

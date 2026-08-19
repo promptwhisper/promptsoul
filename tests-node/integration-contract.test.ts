@@ -41,6 +41,16 @@ test("the browser chat request stays aligned with the strict server contract", (
   assert.doesNotMatch(requestBlock, /\bnpc\s*:/u);
 });
 
+test("motion verification samples a live rendered frame without disabling updates", () => {
+  const runtime = readFileSync(path.join(process.cwd(), "assets", "app.js"), "utf8");
+  const hook = runtime.match(
+    /async function runMotionDebugHook[\s\S]*?\n  \}\n\n  async function initLive2D/u,
+  )?.[0] ?? "";
+  assert.match(hook, /sampled@/u);
+  assert.doesNotMatch(hook, /ticker\?\.stop/u);
+  assert.doesNotMatch(hook, /manager\.update\s*=/u);
+});
+
 test("the browser Aivis request stays same-origin and drives only runtime mouth parameters", () => {
   const source = readFileSync(path.join(process.cwd(), "assets", "app.js"), "utf8");
   const playback = readFileSync(
@@ -54,22 +64,52 @@ test("the browser Aivis request stays same-origin and drives only runtime mouth 
   );
   assert.match(playback, /context\.createBufferSource\(\)/u);
   assert.match(playback, /source\.connect\(this\.analyser\)/u);
-  assert.match(playback, /source\.onended\s*=\s*\(\)\s*=>\s*resolve\(\)/u);
+  assert.match(
+    playback,
+    /source\.onended\s*=\s*\(\)\s*=>\s*\{[\s\S]*?this\.finishItem\(item, "ended"\);[\s\S]*?resolve\(\);/u,
+  );
+  assert.match(
+    playback,
+    /contextTime\s*>=\s*item\.startAt[\s\S]*?item\.started\s*=\s*true;[\s\S]*?onSegmentStarted/u,
+  );
   assert.match(playback, /getFloatTimeDomainData\(this\.samples\)/u);
   assert.match(playback, /calculateRms\(this\.samples\)/u);
   assert.match(source, /settings\?\.getLipSyncParameters\?\.\(\)/u);
-  assert.match(source, /internalModel\.on\("beforeModelUpdate",\s*updateMouth\)/u);
+  assert.match(source, /internalModel\.on\("beforeModelUpdate",\s*updateFrameEffects\)/u);
+  const frameEffects = source.match(
+    /const updateFrameEffects = \(\) => \{[\s\S]*?\n    \};/u,
+  )?.[0] ?? "";
+  assert.ok(frameEffects.indexOf("actionCueScheduler.applyFrame") >= 0);
+  assert.ok(frameEffects.indexOf("setMouthOpen") > frameEffects.indexOf("actionCueScheduler.applyFrame"));
   assert.match(source, /index\s*>=\s*count/u);
   assert.match(source, /setParameterValueByIndex\(index,\s*normalized\)/u);
   assert.match(source, /getParameterValueByIndex\(index\)/u);
   assert.match(source, /mouthOpen:\s*state\.appliedLipSyncValue/u);
   assert.match(source, /lipSyncParameterIds:\s*\[\.\.\.state\.lipSyncParameterIds\]/u);
+  assert.match(source, /lipSyncAvailable:\s*state\.lipSyncAvailable/u);
   assert.match(source, /mouthEvidence:\s*state\.lipSyncParameterReadbackVerified/u);
   assert.match(source, /artMeshDeformationVerified:\s*false/u);
   assert.match(source, /const revision = \+\+state\.ttsStatusRevision/u);
-  assert.match(source, /const streamTtsEnabled = state\.ttsEnabled/u);
+  assert.match(
+    source,
+    /const streamTtsEnabled = state\.ttsEnabled[\s\S]*?recordingSmoothTts !== "true"/u,
+  );
   assert.doesNotMatch(`${source}\n${playback}`, /speechSynthesis|SpeechSynthesisUtterance/u);
   assert.doesNotMatch(playback, /localStorage|sessionStorage|document\.cookie|127\.0\.0\.1:10101/u);
+  assert.match(source, /当前模型没有可驱动口型，动作继续播放/u);
+});
+
+test("chat keeps an emotion motion visible while synthesized speech drives the mouth", () => {
+  const source = readFileSync(path.join(process.cwd(), "assets", "app.js"), "utf8");
+  assert.match(source, /\["nod", "happy", "wink"\]\.find/u);
+  assert.match(source, /state\.activeSpeechEmotion = speechEmotion === "neutral" \? null : speechEmotion/u);
+  assert.match(source, /const speechPlaying = state\.ttsManager\?\.getState\(\)\.state === "playing"/u);
+  assert.match(
+    source,
+    /state\.activeSpeechEmotion === speechEmotion[\s\S]*?void playEmotion\(speechEmotion\)/u,
+  );
+  assert.match(source, /const pendingEmotion = state\.pendingSpeechEmotion \|\| state\.activeSpeechEmotion/u);
+  assert.match(source, /if \(pendingEmotion\) void restartEmotionForSpeech\(pendingEmotion\)/u);
 });
 
 test("build configuration never bundles licensed local models into standalone output", () => {
@@ -214,8 +254,9 @@ test("motion API compiles provider data into PromptSoul without changing origina
       Curves: [referenceCurve("ParamAngleX")],
     }));
 
+    let providerCalls = 0;
     const result = await generateMotion(
-      { prompt: "轻轻侧头再回到原位" },
+      { prompt: "大幅摇头再回到原位" },
       {
         root,
         settings: {
@@ -225,10 +266,14 @@ test("motion API compiles provider data into PromptSoul without changing origina
           source: "environment",
         },
         callProvider: async (_settings, messages) => {
-          const request = JSON.parse(messages.at(-1)?.content ?? "{}") as { required_id: string };
+          providerCalls += 1;
+          if (providerCalls === 2) {
+            assert.match(messages.at(-1)?.content ?? "", /too subtle at full-body scale/u);
+          }
+          const originalRequest = JSON.parse(messages[1]?.content ?? "{}") as { required_id: string };
           return {
             status: "ok",
-            id: request.required_id,
+            id: originalRequest.required_id,
             name: "安全侧头",
             duration: 1.2,
             fade_in: 0.3,
@@ -237,7 +282,7 @@ test("motion API compiles provider data into PromptSoul without changing origina
               control: "c01",
               keyframes: [
                 { time: 0, value: 0 },
-                { time: 0.6, value: 0.25 },
+                { time: 0.6, value: providerCalls === 1 ? 0.25 : 0.7 },
                 { time: 1.2, value: 0 },
               ],
             }],
@@ -245,6 +290,7 @@ test("motion API compiles provider data into PromptSoul without changing origina
         },
       },
     );
+    assert.equal(providerCalls, 2);
     assert.equal(result.motion.group, "PromptSoul");
     assert.match(result.motion.name, /^promptsoul_ai_[0-9a-f]{12}$/u);
     assert.match(result.motion.revision, /^rev_[0-9a-f]{16}$/u);

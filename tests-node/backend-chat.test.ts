@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { afterEach, describe, test } from "node:test";
 
-import { POST as postChat } from "../app/api/chat/route";
+import {
+  POST as postChat,
+} from "../app/api/chat/route";
 import { GET as getStatus } from "../app/api/status/route";
 import { callAituberChat } from "../lib/server/aituber-chat";
 import {
@@ -13,9 +16,20 @@ import {
   parseModelResponse,
   validateChatPayload,
 } from "../lib/server/chat-service";
+import type {
+  RealtimeConversationBackend,
+  RealtimeChatResult,
+} from "../lib/server/dsh-realtime";
+import type { ValidatedRealtimeSegment } from "../lib/server/realtime-cue";
+import { createDshRealtimeStreamingResponse } from "../lib/server/realtime-chat-stream";
+import { getDshRealtimeSettings } from "../lib/server/realtime-settings";
 
 const ORIGINAL_KEY = process.env.NPC_API_KEY;
 const ORIGINAL_OPENAI_KEY = process.env.OPENAI_API_KEY;
+const ORIGINAL_CHAT_BACKEND = process.env.CHAT_BACKEND;
+const ORIGINAL_DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY;
+const DSH_BACKEND_STATE = Symbol.for("promptsoul.dsh-realtime-backend");
+const ORIGINAL_DSH_BACKEND_STATE = Reflect.get(globalThis, DSH_BACKEND_STATE) as unknown;
 
 function demoEnvironment(): void {
   delete process.env.NPC_API_KEY;
@@ -26,7 +40,57 @@ afterEach(() => {
   demoEnvironment();
   if (ORIGINAL_KEY !== undefined) process.env.NPC_API_KEY = ORIGINAL_KEY;
   if (ORIGINAL_OPENAI_KEY !== undefined) process.env.OPENAI_API_KEY = ORIGINAL_OPENAI_KEY;
+  if (ORIGINAL_CHAT_BACKEND === undefined) delete process.env.CHAT_BACKEND;
+  else process.env.CHAT_BACKEND = ORIGINAL_CHAT_BACKEND;
+  if (ORIGINAL_DEEPSEEK_KEY === undefined) delete process.env.DEEPSEEK_API_KEY;
+  else process.env.DEEPSEEK_API_KEY = ORIGINAL_DEEPSEEK_KEY;
+  if (ORIGINAL_DSH_BACKEND_STATE === undefined) Reflect.deleteProperty(globalThis, DSH_BACKEND_STATE);
+  else Reflect.set(globalThis, DSH_BACKEND_STATE, ORIGINAL_DSH_BACKEND_STATE);
 });
+
+function realtimeSettingsSignature(): string {
+  const settings = getDshRealtimeSettings();
+  return createHash("sha256")
+    .update(settings.apiBase)
+    .update("\0")
+    .update(settings.model)
+    .update("\0")
+    .update(settings.apiKey ?? "")
+    .digest("hex");
+}
+
+function realtimeSegment(seq = 0): ValidatedRealtimeSegment {
+  return {
+    type: "segment",
+    seq,
+    text: "你好。",
+    fallback: "happy",
+    modelRevision: "0123456789abcdef",
+    cuesRejected: false,
+    cues: [{
+      id: "hello",
+      at: 0,
+      span: 1,
+      curves: [{
+        parameterId: "ParamAngleX",
+        minimum: -30,
+        maximum: 30,
+        base: 0,
+        keys: [[0, 0], [0.5, 15], [1, 0]],
+      }],
+    }],
+  };
+}
+
+function realtimeResult(segmentCount = 1): RealtimeChatResult {
+  return {
+    reply: "你好。",
+    emotion: "happy",
+    mode: "dsh-realtime",
+    modelRevision: "0123456789abcdef",
+    segmentCount,
+  };
+}
 describe("chat validation and response parsing", () => {
   test("trims messages, removes a duplicated final user bubble, and rejects system history", () => {
     assert.deepEqual(validateChatPayload({
@@ -149,7 +213,12 @@ describe("chat service and routes", () => {
     demoEnvironment();
     const request = new Request("http://127.0.0.1:8765/api/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Host: "127.0.0.1:8765",
+        Origin: "http://127.0.0.1:8765",
+        "Sec-Fetch-Site": "same-origin",
+      },
       body: JSON.stringify({ message: "你是谁？", history: [] }),
     });
     const response = await postChat(request);
@@ -160,18 +229,33 @@ describe("chat service and routes", () => {
     assert.equal(typeof result.reply, "string");
 
     process.env.NPC_API_KEY = "status-route-secret";
+    process.env.CHAT_BACKEND = "dsh-realtime";
+    process.env.DEEPSEEK_API_KEY = "dsh-status-route-secret";
     const status = await getStatus();
     const text = await status.text();
     assert.equal(status.status, 200);
     assert.doesNotMatch(text, /status-route-secret/u);
+    assert.doesNotMatch(text, /dsh-status-route-secret/u);
     assert.equal((JSON.parse(text) as Record<string, unknown>).mode, "provider");
+    const statusDocument = JSON.parse(text) as {
+      realtime: { backend: string; configured: boolean; metrics: Record<string, unknown> };
+    };
+    assert.equal(statusDocument.realtime.backend, "dsh-realtime");
+    assert.equal(statusDocument.realtime.configured, true);
+    assert.equal(typeof statusDocument.realtime.metrics.turnsStarted, "number");
   });
 
   test("keeps JSON compatibility while exposing NDJSON completion events", async () => {
     demoEnvironment();
     const response = await postChat(new Request("http://127.0.0.1:8765/api/chat?stream=1", {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/x-ndjson" },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/x-ndjson",
+        Host: "127.0.0.1:8765",
+        Origin: "http://127.0.0.1:8765",
+        "Sec-Fetch-Site": "same-origin",
+      },
       body: JSON.stringify({ message: "こんにちは", history: [] }),
     }));
     assert.equal(response.status, 200);
@@ -185,7 +269,12 @@ describe("chat service and routes", () => {
   test("rejects non-JSON and oversized chat input with stable error envelopes", async () => {
     const wrongType = await postChat(new Request("http://localhost:8765/api/chat", {
       method: "POST",
-      headers: { "Content-Type": "text/plain" },
+      headers: {
+        "Content-Type": "text/plain",
+        Host: "localhost:8765",
+        Origin: "http://localhost:8765",
+        "Sec-Fetch-Site": "same-origin",
+      },
       body: "hello",
     }));
     assert.equal(wrongType.status, 415);
@@ -195,11 +284,178 @@ describe("chat service and routes", () => {
 
     const tooLarge = await postChat(new Request("http://localhost:8765/api/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Host: "localhost:8765",
+        Origin: "http://localhost:8765",
+        "Sec-Fetch-Site": "same-origin",
+      },
       body: JSON.stringify({ message: "x".repeat(2_001) }),
     }));
     assert.equal(tooLarge.status, 413);
     assert.equal((await tooLarge.json() as { error: { code: string } }).error.code, "message_too_large");
+  });
+
+  test("rejects non-loopback and cross-origin chat mutations", async () => {
+    const crossOrigin = await postChat(new Request("http://127.0.0.1:8765/api/chat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Host: "127.0.0.1:8765",
+        Origin: "https://evil.test",
+        "Sec-Fetch-Site": "cross-site",
+      },
+      body: JSON.stringify({ message: "consume local credentials" }),
+    }));
+    assert.equal(crossOrigin.status, 403);
+    assert.equal(
+      (await crossOrigin.json() as { error: { code: string } }).error.code,
+      "same_origin_required",
+    );
+
+    const nonLoopback = await postChat(new Request("https://promptsoul.example/api/chat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Host: "promptsoul.example",
+        Origin: "https://promptsoul.example",
+        "Sec-Fetch-Site": "same-origin",
+      },
+      body: JSON.stringify({ message: "not local" }),
+    }));
+    assert.equal(nonLoopback.status, 403);
+    assert.equal(
+      (await nonLoopback.json() as { error: { code: string } }).error.code,
+      "local_request_required",
+    );
+  });
+});
+
+describe("DSH realtime chat route", () => {
+  test("selects the process-wide DSH backend for realtime stream requests", async () => {
+    process.env.CHAT_BACKEND = "dsh-realtime";
+    process.env.DEEPSEEK_API_KEY = "route-selection-test-key";
+    let calls = 0;
+    const backend: RealtimeConversationBackend = {
+      async stream(_request, sink) {
+        calls += 1;
+        sink(realtimeSegment());
+        return realtimeResult();
+      },
+    };
+    Reflect.set(globalThis, DSH_BACKEND_STATE, {
+      signature: realtimeSettingsSignature(),
+      backend,
+    });
+
+    const response = await postChat(new Request("http://127.0.0.1:8765/api/chat?stream=1", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/x-ndjson",
+        Host: "127.0.0.1:8765",
+        Origin: "http://127.0.0.1:8765",
+        "Sec-Fetch-Site": "same-origin",
+      },
+      body: JSON.stringify({ message: "实时回复", history: [] }),
+    }));
+    const events = (await response.text()).trim().split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+    assert.equal(calls, 1);
+    assert.deepEqual(events.map((event) => event.type), ["start", "segment", "done"]);
+    assert.equal(events.at(-1)?.mode, "dsh-realtime");
+  });
+
+  test("emits only start, compiled segment, and done envelopes", async () => {
+    const backend: RealtimeConversationBackend = {
+      async stream(_request, sink) {
+        sink(realtimeSegment());
+        return realtimeResult();
+      },
+    };
+    const response = createDshRealtimeStreamingResponse(
+      { message: "打个招呼", history: [] },
+      new Request("http://127.0.0.1:8765/api/chat", { method: "POST" }),
+      { backend, persona: DEFAULT_PERSONA, turnId: "turn_test" },
+    );
+
+    assert.match(response.headers.get("content-type") ?? "", /application\/x-ndjson/u);
+    const lines = (await response.text()).trim().split("\n");
+    const events = lines.map((line) => JSON.parse(line) as Record<string, any>);
+    assert.deepEqual(events.map((event) => event.type), ["start", "segment", "done"]);
+    assert.equal(events[0].turnId, "turn_test");
+    assert.equal(events[1].turnId, "turn_test");
+    assert.equal(events[1].cues[0].curves[0].parameter, "ParamAngleX");
+    assert.equal("parameterId" in events[1].cues[0].curves[0], false);
+    assert.doesNotMatch(lines[1], /c01|control/u);
+    assert.equal(events[2].mode, "dsh-realtime");
+  });
+
+  test("falls back to one deterministic segment when DSH fails before speech", async () => {
+    const backend: RealtimeConversationBackend = {
+      async stream() {
+        throw new Error("raw-provider-secret-must-not-leak");
+      },
+    };
+    const response = createDshRealtimeStreamingResponse(
+      { message: "你是谁？", history: [] },
+      new Request("http://127.0.0.1:8765/api/chat", { method: "POST" }),
+      { backend, persona: DEFAULT_PERSONA, turnId: "turn_fallback" },
+    );
+    const body = await response.text();
+    const events = body.trim().split("\n").map((line) => JSON.parse(line) as Record<string, any>);
+
+    assert.deepEqual(events.map((event) => event.type), ["start", "segment", "done"]);
+    assert.equal(events[1].cues.length, 0);
+    assert.equal(events[1].cuesRejected, true);
+    assert.equal(events[2].mode, "demo");
+    assert.doesNotMatch(body, /raw-provider-secret/u);
+  });
+
+  test("closes a partial turn with a sanitized error instead of replacing spoken text", async () => {
+    const backend: RealtimeConversationBackend = {
+      async stream(_request, sink) {
+        sink(realtimeSegment());
+        throw new Error("transport exposed provider response");
+      },
+    };
+    const response = createDshRealtimeStreamingResponse(
+      { message: "你好", history: [] },
+      new Request("http://127.0.0.1:8765/api/chat", { method: "POST" }),
+      { backend, persona: DEFAULT_PERSONA, turnId: "turn_partial" },
+    );
+    const body = await response.text();
+    const events = body.trim().split("\n").map((line) => JSON.parse(line) as Record<string, any>);
+
+    assert.deepEqual(events.map((event) => event.type), ["start", "segment", "error"]);
+    assert.equal(events[2].partial, true);
+    assert.equal(events[2].error.code, "dsh_realtime_failed");
+    assert.doesNotMatch(body, /transport exposed|provider response/u);
+  });
+
+  test("aborts backend work when the browser cancels the response body", async () => {
+    let observedAbort: (() => void) | undefined;
+    const aborted = new Promise<void>((resolve) => { observedAbort = resolve; });
+    const backend: RealtimeConversationBackend = {
+      async stream(_request, _sink, signal) {
+        await new Promise<void>((_resolve, reject) => {
+          signal.addEventListener("abort", () => {
+            observedAbort?.();
+            reject(signal.reason);
+          }, { once: true });
+        });
+        return realtimeResult(0);
+      },
+    };
+    const response = createDshRealtimeStreamingResponse(
+      { message: "会被打断", history: [] },
+      new Request("http://127.0.0.1:8765/api/chat", { method: "POST" }),
+      { backend, persona: DEFAULT_PERSONA, turnId: "turn_cancel" },
+    );
+
+    await response.body?.cancel();
+    await aborted;
   });
 });
 

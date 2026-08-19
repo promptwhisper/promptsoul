@@ -1,198 +1,162 @@
 <p align="center">
-  <img src="./docs/images/promptsoul-banner.svg" width="100%" alt="PromptSoul gives local AI characters a visible soul through emotion-driven Live2D and safe motion generation">
+  <img src="./docs/images/promptsoul-banner.svg" width="100%" alt="PromptSoul — local-first AI Live2D NPC">
 </p>
 
 # PromptSoul
 
 [简体中文](README.md) · English · [日本語](README.ja.md)
 
-> The [Chinese README](README.md) is the canonical, complete reference. This English document is a maintained overview; follow the Chinese document if wording differs.
-
-PromptSoul is a local-first, self-hosted AI Live2D NPC prototype. A Next.js server streams a character reply and emotion label, the browser maps the emotion to a Live2D motion, and a Japanese-oriented segmenter sends the readable copy of the assistant's original reply to the local AivisSpeech Engine. Real Web Audio amplitude drives runtime lip sync. The Motion Workshop still compiles natural-language prompts into strictly constrained actions supported by the current model.
-
-> The AI never edits meshes, rigging, or Cubism bindings. Generated actions may use only existing model parameters and may be registered only in the project-owned `PromptSoul` motion group.
-
-**Start here:** [Quick start](#quick-start) · [AI Provider](#ai-provider) · [Character voice](#character-voice) · [Prompt-to-motion](#prompt-to-motion-generation) · [Use another model](#using-another-live2d-model) · [Security](#contributing-and-security)
+PromptSoul is a local-first Next.js AI Live2D NPC: it streams character replies, maps emotions to motions, generates safe model-specific actions from prompts, and can speak through local AivisSpeech with real-audio lip sync.
 
 <sub>Demo character: Hiyori Momose ©Live2D. Model data is not included in this repository.</sub>
 
 > This content uses sample data owned and copyrighted by Live2D Inc. The sample data are utilized in accordance with terms and conditions set by Live2D Inc. This content itself is created at the author’s sole discretion.
 
-## Project status
-
-PromptSoul is an experimental local development prototype. It has no accounts, tenant isolation, public-network authentication, or rate limiting. The server binds to `127.0.0.1`; do not expose it directly to the public internet.
+Main capabilities include streaming chat and emotion motions, optional DSH realtime cues, safe prompt-to-motion generation, local voice and lip sync, responsive Live2D controls, and safe model import and validation.
 
 ## Quick start
 
-Requirements: a supported Node.js 22+ release, npm, a modern browser, and network access. Python is not required. The page loads Live2D Cubism Core, PixiJS, and `pixi-live2d-display` from pinned CDN resources.
+Requirements: Node.js 22.19+, npm, a modern browser, and network access. Python is not required.
 
-Before downloading the Hiyori demo, read the [Live2D Free Material License Agreement](https://www.live2d.com/eula/live2d-free-material-license-agreement_en.html) and [Live2D Cubism Sample Data Terms of Use](https://www.live2d.com/en/learn/sample/model-terms/). Run the setup command only if you agree.
+Before downloading Hiyori, read the [Live2D Free Material License Agreement](https://www.live2d.com/eula/live2d-free-material-license-agreement_en.html) and [Cubism Sample Data Terms of Use](https://www.live2d.com/en/learn/sample/model-terms/). Run the setup command only if you accept both.
 
 ```bash
 npm ci
-
-# First use only: explicitly confirm that you accept the linked terms.
 npm run setup:demo -- --accept-license
 npm run motions:generate
 npm run motions:validate
-
 npm run dev
 ```
 
-Open <http://127.0.0.1:8765>. Without an API Key, chat uses deterministic local demo replies. If AivisSpeech is offline, text chat, Live2D, existing actions, and interactions remain available. The Motion Workshop requires an AI Provider.
+Open <http://127.0.0.1:8765>.
 
-For a production build on a trusted self-hosted machine:
+Without an API Key, chat uses deterministic local replies. Without AivisSpeech, text chat, Live2D, and motions still work; only voice is unavailable.
 
-```bash
-npm run build
-npm start
-```
+For production on a trusted self-hosted machine, run `npm run build` and then `npm start`. PromptSoul needs persistent local model and cache files, so Edge and ephemeral Serverless runtimes are not supported.
 
-PromptSoul reads and writes a local model working copy, generated motion definitions, and a bounded local audio cache. It is not designed for Edge or ephemeral Serverless runtimes.
+## Configure the AI Provider
 
-## AI Provider
-
-The top-right settings panel is read-only and shows the current OpenAI-compatible server configuration. Normal NPC chat uses `@aituber-onair/chat`; motion generation retains PromptSoul's bounded non-streaming transport and independent safety compiler.
-
-- The LLM Key is read only from the Node server environment and is never sent to the browser.
-- The Key is never written to React state, browser storage, cookies, config files, logs, responses, or Git.
-- Remote Providers must use HTTPS; HTTP is accepted only for loopback services.
-- Character persona, chat content, and motion prompts are sent to the Provider you configure.
-- Live2D model files, raw parameter IDs, generated curves, and local paths are not sent to the Provider.
-
-For long-running local deployments, export server environment variables from the launch shell:
+PromptSoul supports OpenAI-compatible Chat Completions providers. LLM credentials are read only by the Node server and are never sent to the browser.
 
 ```bash
-export NPC_API_KEY="your API Key"
+export NPC_API_KEY="your-api-key"
 export NPC_API_BASE="https://api.openai.com/v1"
-export NPC_MODEL="gpt-5.6-luna"
+export NPC_MODEL="your-provider-model"
 npm run dev
 ```
 
-`NPC_API_KEY` takes precedence over `OPENAI_API_KEY`. Restart PromptSoul after changing server environment variables.
+`NPC_API_KEY` takes precedence over `OPENAI_API_KEY`. The default model is `gpt-5.6-luna`; replace it if unsupported, then restart the server. The Motion Workshop also needs a provider. Chat and prompts are sent to it, but model files, raw parameter IDs, curves, and local paths are not.
 
-For production, run `npm run build` before `npm start`, as shown in [Quick start](#quick-start).
+## Optional DeepSeek Harness realtime chat
 
-`gpt-5.6-luna` is PromptSoul's current default Provider model name and is not available from every OpenAI-compatible service. Select a model actually supported by your Provider if it returns a model-not-found error.
+The default chat path is unchanged. To stream validated speech segments with temporary Live2D parameter cues, add these server-only values to `.env.local`:
 
-## Character voice
+```dotenv
+CHAT_BACKEND=dsh-realtime
+DEEPSEEK_API_KEY=your-key
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DSH_MODEL=deepseek-v4-flash
+```
 
-Character voice uses only the local [AivisSpeech Engine](https://github.com/Aivis-Project/AivisSpeech-Engine) at `127.0.0.1:10101`; it needs no cloud TTS Key. Install and start AivisSpeech, import the コハク model yourself, and confirm the あまあま style exists. Model files are not included or downloaded by PromptSoul, and you are responsible for the selected voice model's license.
+Each accepted NDJSON segment enters the existing TTS queue while its cue follows the same AudioContext clock. Cues stay in browser memory: they never write motion files, alter model groups, or replace the Motion Workshop. The Key and raw DSH events stay server-side, and the child runtime receives only an allowlisted environment. Remove `CHAT_BACKEND` to use the original Provider/demo path.
 
-Do not set `speaker=1`: the style ID shown inside the model is local to that model. AivisSpeech creates a dynamic global Style ID for its HTTP API. PromptSoul calls `/speakers`, matches the configured UUID/name plus style name, and verifies any explicitly configured ID before using `/audio_query` and `/synthesis`.
+DSH receives the active controls' raw Cubism Parameter/PartOpacity IDs, ranges and base values, plus up to three complete, unmodified existing `.motion3.json` references selected for the request. A realtime cue may contain 40 curves with 64 keys each, enough to learn from all 35 curves in Hiyori `hiyori_m08` instead of reducing it to a small pose template. It does not receive `.moc3`, textures, or API keys. PartOpacity must be coordinated with a primary pose curve and is restored after playback.
+
+## Optional local voice
+
+Voice uses the local [AivisSpeech Engine](https://github.com/Aivis-Project/AivisSpeech-Engine) at `127.0.0.1:10101`. It requires no cloud TTS Key.
+
+Install and start AivisSpeech, import a voice model with the required style, then copy the relevant values from `.env.example` into your existing `.env.local`:
+
+```dotenv
+TTS_PROVIDER=aivis
+AIVIS_BASE_URL=http://127.0.0.1:10101
+AIVIS_SPEAKER_UUID=5680ac39-43c9-487a-bc3e-018c0d29cc38
+AIVIS_STYLE_NAME=あまあま
+AIVIS_STYLE_ID=
+```
+
+Normally leave `AIVIS_STYLE_ID` empty. A model's internal Style ID (for example `1`) is not the global Style ID used by the Engine API. PromptSoul resolves and verifies the current global ID through `/speakers`.
+
+Check the installed voice and generate a real WAV smoke test:
 
 ```bash
-# Merge the Aivis variables from .env.example into your existing .env.local.
-npm run tts:check          # prints the resolved global Style ID
-npm run tts:smoke          # writes an ignored artifacts/tts-smoke.wav
+npm run tts:check
+npm run tts:smoke
 npm run dev
 ```
 
-The public server boundary is `GET /api/tts/status`, `GET /api/tts/voices`, and `POST /api/tts`; the existing `GET /api/status` also includes a `tts` field. The browser calls only same-origin routes. The Engine URL remains server-only and cannot be supplied by a client.
-
-The segmenter is optimized for Japanese punctuation; it does not detect languages or translate replies. The default persona asks the Provider to answer in the user's language, so use Japanese input or adjust the persona if Japanese speech is required. The original text displayed in chat is never rewritten for TTS.
-
-One ordered `AudioContext` queue plays each phrase through `AudioBufferSourceNode → AnalyserNode → GainNode → AudioContext.destination`; the gain node also feeds a `MediaStreamAudioDestinationNode` used by the recorder. Noise-gated, smoothed real RMS drives only runtime mouth parameters during the proven legacy renderer's `beforeModelUpdate` hook. Lip sync prefers the model's `LipSync` group (Hiyori uses `ParamMouthOpenY`). A TTS failure skips audio without interrupting text chat or emotion motions.
-
-The bounded local WAV cache contains synthesized conversation audio. On a shared device or for sensitive conversations, set `TTS_CACHE_ENABLED=false`; stop PromptSoul and remove `.cache/aivis-tts/` to purge existing entries.
-
-The top-right local voice panel shows Engine/voice/style readiness, the real global Style ID, installed voices, preview, stop, queue state, and the last error. See the complete [Chinese README](README.md#接入角色语音) for every environment variable, troubleshooting, cache behavior, and the unattended recording contract.
-
-For a focused unattended TTS/lip-sync proof clip, install Chrome/Chromium, ffmpeg, ffprobe, Bash, `curl`, and `seq` on macOS, Linux, or WSL, then run:
-
-```bash
-npm run record:browser
-```
-
-The recorder starts Next.js, opens a separate headless Chrome instance with the project's SwiftShader/background-rendering flags, calls `PromptSoulTTS.play()` directly, captures CDP frames plus the queue's `MediaStreamAudioDestinationNode`, and encodes them together. It does **not** send a chat message or exercise the LLM stream.
-
-Before recording, it requires TTS state `playing`, a running `AudioContext`, advancing playback time, non-silent RMS, and a nonzero Live2D mouth-parameter readback. That proves the real audio-to-runtime-parameter path, but it does not independently compare ArtMesh vertices or prove that a gesture is visually obvious. The final checks use ffprobe and verify that three temporary extracted JPEGs are nonempty; they are not semantic visual inspection and are deleted with the temporary working directory. Review the resulting video manually.
-
-The default output is `artifacts/promptsoul-unattended.mp4` at 720×1280. Override it with `OUT`, `WIDTH`, `HEIGHT`, `PORT`, `CHROME`, `FFMPEG`, `FFPROBE`, `TTS_TEXT`, or `RECORD_TIMEOUT_MS`; equivalent CLI flags are available via `npm run record:browser -- --help`. The command fails rather than silently continuing when AivisSpeech, the configured voice, real audio playback, or mouth-parameter variation cannot be proven.
+`tts:smoke` writes the ignored file `artifacts/tts-smoke.wav`. The Engine address stays server-side, and TTS failure does not interrupt chat or motions. See `.env.example` for optional settings. The local WAV cache may contain conversation audio; disable it with `TTS_CACHE_ENABLED=false` or stop PromptSoul and remove `.cache/aivis-tts/`. Never commit AIVMX models or generated audio, and follow each voice model's license.
 
 ## Prompt-to-motion generation
 
-After a Provider and model are available, describe an action such as “look surprised, lean back, then nod and return to the starting pose.” The server:
+Enter an action in the Motion Workshop after configuring a provider and model. Results are constrained to supported parameters, validated, and registered only in `PromptSoul`; model-owned `Action`, `Idle`, and `Tap` groups are never overwritten. Unsupported requests return `motion_not_feasible`.
 
-1. derives safe parameter ranges, base poses, and physics outputs from the current model;
-2. sends the Provider only opaque controls, semantic labels, and normalized values;
-3. rejects unknown fields, arbitrary code, physics outputs, `PartOpacity`, out-of-range values, invalid keyframes, and curves that do not return to the base pose;
-4. writes atomically and updates only the `PromptSoul` group;
-5. reloads the model and previews the generated action.
+## Prompt wardrobe and saved outfits
 
-Persisted AI actions use server-owned `promptsoul_ai_<12-hex>` IDs. Only validated generated actions with that exact form show a delete control. A successful delete can report `cleanupPending` if an ignored generated definition still needs manual cleanup. Built-in actions and model-owned groups such as `Action`, `Idle`, and `Tap` cannot be deleted from the UI. The seven built-in emotion actions documented in this repository are specific to the current Hiyori definition; another model may expose a different safe set.
+PromptSoul can connect to [PromptSkin](https://github.com/promptwhisper/PromptSkin). The Prompt Wardrobe can generate an outfit from a text description, then switch instantly between the original texture and every previously generated outfit.
 
-If the current model cannot express a request naturally and safely, the API returns `motion_not_feasible` instead of forcing unsupported parameters.
+Start the PromptSkin backend (normally on `127.0.0.1:8000`) and add these server-only values to PromptSoul's `.env.local`:
 
-## Using another Live2D model
+```dotenv
+PROMPTSKIN_API_BASE=http://127.0.0.1:8000
+PROMPTSKIN_PROVIDER=openai
+PROMPTSKIN_GENERATION_TIMEOUT_MS=720000
+```
 
-The ZIP or directory must contain a Cubism 4 `*.model3.json` file and every referenced texture, `.moc3`, physics, and motion resource.
+Configure the image API Key only in PromptSkin. Set `PROMPTSKIN_PROVIDER=mock` to test the complete local pipeline without an image API.
+
+For generation, the PromptSoul server creates a temporary ZIP of the active model and sends it to PromptSkin. A result is accepted only when its `.model3.json`, `.moc3`, texture references, and texture dimensions match the active model. PromptSoul stores and swaps PNG textures only; UVs, rigging, physics, parameters, and motions stay unchanged. Saved outfits live under the Git-ignored `local-assets/wardrobe/`. The wardrobe is automatically disabled for Hiyori because its character design must not be modified.
+
+An existing PromptSkin export can be added to the same preset list:
+
+```bash
+npm run wardrobe:import -- /path/to/promptskin-export.zip --name "Dark academy"
+# Add --activate to wear it immediately after import.
+```
+
+When PromptSkin uses a cloud image provider, outfit prompts and editable textures are sent to that provider. Upload only models and artwork you are authorized to modify and process.
+
+## Use another Live2D model
+
+The ZIP or directory should use Cubism 4 format and contain a `*.model3.json` with all referenced resources. Confirm actual compatibility with `npm run verify:browser`.
 
 ```bash
 npm run setup:model -- /path/to/model-folder-or.zip
 npm run analyze:model
-```
-
-Always inspect the analysis before creating `motion-defs/<model-name>.ts`. Hiyori parameter values are examples, not a template for another rig.
-
-```bash
+# Review the analysis, then create or edit motion-defs/<model-name>.ts
 npm run motions:generate
 npm run motions:validate
 npm run verify:browser
 npm run dev
 ```
 
-Update `npc.config.json` and `modelAttribution` when replacing the character so every stage, screenshot, and demo retains the attribution required by that model's license.
-
-## Repository layout
-
-```text
-app/                         Next.js pages and Node Route Handlers
-components/                  React status and local AivisSpeech diagnostics UI
-components/legacy-runtime.tsx loads the pinned SDKs and proven browser runtime
-assets/app.js                single Live2D controller, chat/TTS wiring, lip sync
-assets/                      remaining responsive styles and browser assets
-lib/server/aivis-*.ts        AivisSpeech client, voice resolution, bounded cache
-lib/shared/browser-tts.ts    Japanese-oriented segmentation and Web Audio queue
-lib/server/                  chat Provider plus model and motion safety
-scripts/                     Node/TypeScript CLI and unattended CDP recording
-tests-node/                  node:test suites
-motion-defs/<model>.ts       Model-specific built-in motion definitions
-motion-defs/generated/       Ignored local AI motion specifications
-npc.config.json              Character, greeting, suggestions, and attribution
-model.config.json            Ignored active-model pointer generated locally
-local-assets/ , models/      Ignored licensed/generated model data
-```
+Update the character details and `modelAttribution` in `npc.config.json` so the UI and every screenshot retain the attribution required by the model's license.
 
 ## Verification
-
-Model-independent checks:
 
 ```bash
 npm run verify
 git diff --check
-```
-
-For model, motion, or visual changes, also run:
-
-```bash
+# Also run these for model, motion, or visual changes:
 npm run motions:generate
 npm run motions:validate
 npm run verify:browser
 ```
 
-Inspect real rendered poses and both desktop and 390×844 layouts. A base-pose-only screenshot means playback failed.
+`verify:browser` requires Chrome, Bash, `curl`, and `seq`. Set `CHROME=/path/to/chrome` when needed, and inspect both desktop and mobile output.
 
-`npm run verify:browser` requires Chrome, Bash, `curl`, and `seq`, and is intended for macOS, Linux, or WSL. Set `CHROME=/path/to/chrome` when Chrome is not installed at the default macOS path.
+## Security and local files
 
-## Contributing and security
+- Keep LLM Keys in server environment variables. Never commit `.env.local`, expose this unauthenticated local server publicly, or put Keys in browser code, logs, screenshots, or model files.
+- Do not commit `models/`, `local-assets/`, `model.config.json`, AIVMX/WAV/video/cache files, or licensed assets. Generated motions may use existing parameters and write only to `PromptSoul`.
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request and follow the [Code of Conduct](CODE_OF_CONDUCT.md). Report vulnerabilities privately according to [SECURITY.md](SECURITY.md); never include a real API Key, private Live2D/AIVMX model, generated WAV, recording, or restricted asset in a public report.
+See [SECURITY.md](SECURITY.md), [CONTRIBUTING.md](CONTRIBUTING.md), and [AGENTS.md](AGENTS.md) before reporting issues or contributing changes.
 
 ## License and upstream
 
-Code and documentation that the copyright holders are entitled to license are available under the [MIT License](LICENSE). This does not license Hiyori, Live2D Cubism Core, AivisSpeech, AIVMX voice models, user-supplied models, or other third-party assets. Do not modify Hiyori's character design. Every screenshot or demo containing Hiyori must visibly retain `Hiyori Momose ©Live2D` and the statement required by the applicable Live2D terms.
+Code and documentation that the copyright holders are entitled to license are available under the [MIT License](LICENSE). This does not license Hiyori, Live2D Cubism Core, AivisSpeech, AIVMX voice models, user models, or other third-party assets. Hiyori's design must not be modified; screenshots and demos must visibly retain `Hiyori Momose ©Live2D` and the required statement.
 
-Live2D Cubism Core remains subject to the [Live2D Proprietary Software License](https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_en.html). AivisSpeech Engine is not bundled and is distributed upstream under [GNU LGPL v3](https://github.com/Aivis-Project/AivisSpeech-Engine/blob/master/LICENSE); each AIVMX voice model may use a different license. Users must inspect and follow the selected model's terms. PromptSoul does not relicense a model author's work. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the complete boundary.
+Live2D Cubism Core remains subject to the [Live2D Proprietary Software License](https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_en.html). AivisSpeech is not bundled and is distributed upstream under [GNU LGPL v3](https://github.com/Aivis-Project/AivisSpeech-Engine/blob/master/LICENSE); each voice model may use a different license. DeepSeek Harness packages are pinned to `0.1.0-rc.6`; their MIT license does not cover DeepSeek API or model services. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
 
-PromptSoul extends [shinshin86/live2d-add-motion-sample-web-ui](https://github.com/shinshin86/live2d-add-motion-sample-web-ui), which demonstrated how to add motions to existing Live2D parameters through JSON without opening Cubism Editor. The upstream MIT copyright notice remains in this repository.
+PromptSoul extends [shinshin86/live2d-add-motion-sample-web-ui](https://github.com/shinshin86/live2d-add-motion-sample-web-ui). Its upstream MIT copyright notice is retained in this repository.

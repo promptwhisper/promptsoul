@@ -1,15 +1,78 @@
+import { createHash } from "node:crypto";
+
 import {
   chat,
   chatStream,
   ChatApiError,
   validateChatPayload,
 } from "../../../lib/server/chat-service";
+import {
+  DshRealtimeBackend,
+} from "../../../lib/server/dsh-realtime";
+import {
+  createDshChildEnvironment,
+  createDshTurnRunner,
+} from "../../../lib/server/dsh-sdk-runner";
+import { realtimeMetrics } from "../../../lib/server/realtime-metrics";
+import { loadRealtimeLipSyncParameterIds } from "../../../lib/server/realtime-model";
+import { createDshRealtimeStreamingResponse } from "../../../lib/server/realtime-chat-stream";
+import {
+  getDshRealtimeSettings,
+  type DshRealtimeSettings,
+} from "../../../lib/server/realtime-settings";
 import { ProviderRequestError } from "../../../lib/server/provider-client";
-import { LocalMutationError, readJsonMutation } from "../../../lib/server/provider-request";
+import {
+  assertLocalSameOriginMutation,
+  LocalMutationError,
+  readJsonMutation,
+} from "../../../lib/server/provider-request";
 import { ProviderConfigurationError } from "../../../lib/server/provider-store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+interface DshBackendState {
+  readonly signature: string;
+  readonly backend: DshRealtimeBackend;
+}
+
+const DSH_BACKEND_STATE = Symbol.for("promptsoul.dsh-realtime-backend");
+const dshBackendGlobal = globalThis as typeof globalThis & {
+  [DSH_BACKEND_STATE]?: DshBackendState;
+};
+
+function dshSettingsSignature(settings: DshRealtimeSettings): string {
+  return createHash("sha256")
+    .update(settings.apiBase)
+    .update("\0")
+    .update(settings.model)
+    .update("\0")
+    .update(settings.apiKey ?? "")
+    .digest("hex");
+}
+
+function getDshRealtimeBackend(settings: DshRealtimeSettings): DshRealtimeBackend {
+  const signature = dshSettingsSignature(settings);
+  const existing = dshBackendGlobal[DSH_BACKEND_STATE];
+  if (existing?.signature === signature) return existing.backend;
+
+  const environment = createDshChildEnvironment(process.env);
+  if (settings.apiKey === null) delete environment.DEEPSEEK_API_KEY;
+  else environment.DEEPSEEK_API_KEY = settings.apiKey;
+  environment.DEEPSEEK_BASE_URL = settings.apiBase;
+  Object.freeze(environment);
+  const backend = new DshRealtimeBackend({
+    createRunner: () => createDshTurnRunner({
+      model: settings.model,
+      environment,
+    }),
+    lipSyncParameterIds: loadRealtimeLipSyncParameterIds,
+    onRunnerReset: () => realtimeMetrics.recordRuntimeRestart(),
+  });
+  dshBackendGlobal[DSH_BACKEND_STATE] = { signature, backend };
+  if (existing !== undefined) void existing.backend.close().catch(() => undefined);
+  return backend;
+}
 
 function json(document: unknown, status = 200): Response {
   return Response.json(document, {
@@ -89,8 +152,17 @@ function streamingResponse(payload: unknown, request: Request): Response {
 
 export async function POST(request: Request): Promise<Response> {
   try {
+    assertLocalSameOriginMutation(request);
     const payload = await readJsonMutation(request);
-    if (wantsStream(request)) return streamingResponse(payload, request);
+    if (wantsStream(request)) {
+      const realtimeSettings = getDshRealtimeSettings();
+      if (realtimeSettings.enabled) {
+        return createDshRealtimeStreamingResponse(payload, request, {
+          backend: getDshRealtimeBackend(realtimeSettings),
+        });
+      }
+      return streamingResponse(payload, request);
+    }
     return json(await chat(payload));
   } catch (error) {
     return errorResponse(error);

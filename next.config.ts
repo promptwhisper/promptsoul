@@ -20,6 +20,14 @@ const contentSecurityPolicy = [
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // DSH launches its JSON-RPC runtime from a package executable and the
+  // Cordis loader resolves plugins dynamically. Keep both entry packages on
+  // Node's native module path instead of turning require.resolve() into a
+  // webpack module id in the production server bundle.
+  serverExternalPackages: [
+    "@deepseek-ai/dsh-sdk-client",
+    "@deepseek-ai/dsh-sdk-jsonrpc-demo",
+  ],
   // Licensed models and local AI output must be mounted beside a self-hosted
   // server, never copied by Next's NFT/standalone deployment tracing.
   outputFileTracingExcludes: {

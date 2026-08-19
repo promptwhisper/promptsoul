@@ -15,7 +15,7 @@
     "motion-generation"
   ],
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.19.0"
   },
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1 --port 8765",
@@ -28,22 +28,31 @@
     "verify": "npm run check:repo && npm run typecheck && npm run lint && npm test && node --check assets/app.js && npm run build",
     "verify:browser": "tools/verify_browser.sh",
     "record:browser": "tools/record_browser.sh",
+    "record:wardrobe": "tsx scripts/record-wardrobe-demo.ts",
     "tts:check": "tsx scripts/tts-check.ts",
     "tts:smoke": "tsx scripts/tts-smoke.ts",
     "setup:demo": "tsx scripts/setup-demo.ts",
     "setup:model": "tsx scripts/setup-model.ts",
     "analyze:model": "tsx scripts/analyze-model.ts",
+    "wardrobe:import": "tsx scripts/import-wardrobe.ts",
     "motions:generate": "tsx scripts/gen-motions.ts",
     "motions:validate": "tsx scripts/validate-motions.ts"
   },
   "dependencies": {
     "@aituber-onair/chat": "0.49.0",
+    "@deepseek-ai/dsh-agent-spine-demo": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm-deepseek": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-sdk-client": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-sdk-jsonrpc-demo": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-sdk-jsonrpc-server": "0.1.0-rc.6",
     "@next/env": "16.2.12",
+    "archiver": "7.0.1",
     "next": "16.2.12",
     "react": "19.2.7",
     "react-dom": "19.2.7"
   },
   "devDependencies": {
+    "@types/archiver": "6.0.3",
     "@types/node": "26.1.1",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
@@ -53,7 +62,10 @@
     "typescript": "5.9.3"
   },
   "overrides": {
+    "brace-expansion": "5.0.9",
+    "js-yaml": "4.3.1",
     "minimatch": "10.2.6",
+    "nanoid": "3.3.18",
     "postcss": "8.5.24",
     "sharp": "0.35.3"
   },

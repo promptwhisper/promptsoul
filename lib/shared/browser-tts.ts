@@ -41,6 +41,16 @@ export interface TtsRequestOptions {
   };
 }
 
+export interface TtsSegmentEvent {
+  itemId: number;
+  tag: unknown;
+}
+
+export interface TtsTimedSegmentEvent extends TtsSegmentEvent {
+  startAt: number;
+  duration: number;
+}
+
 export interface TtsPlaybackManagerOptions {
   endpoint?: string;
   fetchImpl?: typeof fetch;
@@ -51,6 +61,11 @@ export interface TtsPlaybackManagerOptions {
   onSnapshot?: (snapshot: TtsPlaybackSnapshot) => void;
   onMouthOpen?: (value: number) => void;
   onSpeakingChange?: (speaking: boolean) => void;
+  onSegmentQueued?: (event: TtsSegmentEvent) => void;
+  onSegmentScheduled?: (event: TtsTimedSegmentEvent) => void;
+  onSegmentStarted?: (event: TtsTimedSegmentEvent) => void;
+  onSegmentEnded?: (event: TtsTimedSegmentEvent) => void;
+  onSegmentCancelled?: (event: TtsSegmentEvent) => void;
   requestTimeoutMs?: number;
   noiseGate?: number;
   attack?: number;
@@ -61,8 +76,13 @@ interface QueueItem {
   id: number;
   text: string;
   requestOptions: TtsRequestOptions;
+  tag: unknown;
   controller: AbortController | null;
   prepared: Promise<AudioBuffer> | null;
+  startAt: number | null;
+  duration: number | null;
+  started: boolean;
+  terminal: "ended" | "cancelled" | null;
 }
 
 interface CaptureResult {
@@ -359,6 +379,11 @@ export class TtsPlaybackManager {
   private readonly onSnapshot?: (snapshot: TtsPlaybackSnapshot) => void;
   private readonly onMouthOpen?: (value: number) => void;
   private readonly onSpeakingChange?: (speaking: boolean) => void;
+  private readonly onSegmentQueued?: (event: TtsSegmentEvent) => void;
+  private readonly onSegmentScheduled?: (event: TtsTimedSegmentEvent) => void;
+  private readonly onSegmentStarted?: (event: TtsTimedSegmentEvent) => void;
+  private readonly onSegmentEnded?: (event: TtsTimedSegmentEvent) => void;
+  private readonly onSegmentCancelled?: (event: TtsSegmentEvent) => void;
   private readonly requestTimeoutMs: number;
   private readonly noiseGate: number;
   private readonly attack: number;
@@ -410,6 +435,11 @@ export class TtsPlaybackManager {
     this.onSnapshot = options.onSnapshot;
     this.onMouthOpen = options.onMouthOpen;
     this.onSpeakingChange = options.onSpeakingChange;
+    this.onSegmentQueued = options.onSegmentQueued;
+    this.onSegmentScheduled = options.onSegmentScheduled;
+    this.onSegmentStarted = options.onSegmentStarted;
+    this.onSegmentEnded = options.onSegmentEnded;
+    this.onSegmentCancelled = options.onSegmentCancelled;
     this.requestTimeoutMs = Math.max(1000, options.requestTimeoutMs ?? 60000);
     this.noiseGate = options.noiseGate ?? 0.012;
     this.attack = Math.min(1, Math.max(0.01, options.attack ?? 0.58));
@@ -417,17 +447,23 @@ export class TtsPlaybackManager {
     this.emitSnapshot();
   }
 
-  enqueue(text: string, requestOptions: TtsRequestOptions = {}): number | null {
+  enqueue(text: string, requestOptions: TtsRequestOptions = {}, tag?: unknown): number | null {
     const cleaned = cleanTextForSpeech(text);
     if (!cleaned || this.disposed) return null;
     const item: QueueItem = {
       id: this.nextId++,
       text: cleaned,
       requestOptions,
+      tag,
       controller: null,
       prepared: null,
+      startAt: null,
+      duration: null,
+      started: false,
+      terminal: null,
     };
     this.queue.push(item);
+    this.emitLifecycle(this.onSegmentQueued, this.segmentEvent(item));
     if (this.current && ["playing", "paused"].includes(this.state) && !this.prefetch) {
       void this.prefetchNext();
     }
@@ -505,10 +541,15 @@ export class TtsPlaybackManager {
     if (this.disposed) return;
     this.generation += 1;
     this.segmenter.clear();
-    for (const item of [this.current, this.prefetch, ...this.queue]) item?.controller?.abort();
+    const outstanding = [...new Map(
+      [this.current, this.prefetch, ...this.queue]
+        .filter((item): item is QueueItem => item !== null)
+        .map((item) => [item.id, item]),
+    ).values()];
     this.queue = [];
     this.prefetch = null;
     this.current = null;
+    for (const item of outstanding) item.controller?.abort();
     if (this.source) {
       this.source.onended = null;
       try { this.source.stop(); } catch { /* already stopped */ }
@@ -517,12 +558,31 @@ export class TtsPlaybackManager {
     }
     this.playbackResolve?.();
     this.playbackResolve = null;
+    for (const item of outstanding) this.finishItem(item, "cancelled");
     this.audioEndedAt = this.now();
     this.currentDuration = 0;
     this.currentRms = 0;
     this.onSpeakingChange?.(false);
     this.releaseMouth();
     this.setState("idle");
+  }
+
+  cancelPending(): void {
+    if (this.disposed) return;
+    this.segmenter.clear();
+    const pending = [...new Map(
+      [...this.queue, this.prefetch]
+        .filter((item): item is QueueItem => item !== null && item !== this.current)
+        .map((item) => [item.id, item]),
+    ).values()];
+    this.queue = [];
+    this.prefetch = null;
+    for (const item of pending) {
+      item.controller?.abort();
+      this.finishItem(item, "cancelled");
+    }
+    if (!this.current) this.setState("idle");
+    else this.emitSnapshot();
   }
 
   clear(): void {
@@ -586,6 +646,11 @@ export class TtsPlaybackManager {
       peakMouthOpen: this.peakMouthOpen,
       lastError: this.lastError,
     };
+  }
+
+  getAudioContextTime(): number | null {
+    if (!this.context || this.context.state === "closed") return null;
+    return Number.isFinite(this.context.currentTime) ? this.context.currentTime : null;
   }
 
   async startAudioCapture(): Promise<{ mimeType: string; startedAt: number }> {
@@ -713,9 +778,11 @@ export class TtsPlaybackManager {
           this.setState("ready");
           await this.play(item, buffer, runGeneration);
         } catch (error) {
-          if (runGeneration !== this.generation || (error instanceof DOMException && error.name === "AbortError")) {
+          if (runGeneration !== this.generation) {
             break;
           }
+          this.finishItem(item, "cancelled");
+          if (error instanceof DOMException && error.name === "AbortError") break;
           this.setError(error);
         } finally {
           if (this.current === item) this.current = null;
@@ -743,21 +810,28 @@ export class TtsPlaybackManager {
     source.buffer = buffer;
     source.connect(this.analyser);
     this.source = source;
-    this.currentDuration = Number.isFinite(buffer.duration) ? buffer.duration : 0;
-    this.currentStartedAtContextTime = context.currentTime;
-    this.audioStartedAt = this.now();
+    this.currentDuration = Number.isFinite(buffer.duration) ? Math.max(0, buffer.duration) : 0;
+    const startAt = context.currentTime + 0.05;
+    this.currentStartedAtContextTime = startAt;
+    item.startAt = startAt;
+    item.duration = this.currentDuration;
+    this.audioStartedAt = null;
     this.audioEndedAt = null;
     this.currentRms = 0;
     this.peakRms = 0;
     this.peakMouthOpen = 0;
     this.setState("playing");
-    this.onSpeakingChange?.(true);
     try {
       await new Promise<void>((resolve, reject) => {
         this.playbackResolve = resolve;
-        source.onended = () => resolve();
+        source.onended = () => {
+          this.finishItem(item, "ended");
+          resolve();
+        };
         try {
-          source.start(0);
+          const event = this.timedSegmentEvent(item);
+          this.emitLifecycle(this.onSegmentScheduled, event);
+          source.start(startAt);
           this.startMetering();
           void this.prefetchNext();
         } catch (error) {
@@ -777,7 +851,41 @@ export class TtsPlaybackManager {
     this.currentRms = 0;
     this.onSpeakingChange?.(false);
     this.releaseMouth();
+    this.finishItem(item, "ended");
     this.emitSnapshot();
+  }
+
+  private segmentEvent(item: QueueItem): TtsSegmentEvent {
+    return { itemId: item.id, tag: item.tag };
+  }
+
+  private timedSegmentEvent(item: QueueItem): TtsTimedSegmentEvent {
+    return {
+      ...this.segmentEvent(item),
+      startAt: item.startAt ?? 0,
+      duration: item.duration ?? 0,
+    };
+  }
+
+  private finishItem(item: QueueItem, terminal: "ended" | "cancelled"): void {
+    if (item.terminal) return;
+    item.terminal = terminal;
+    if (terminal === "ended") {
+      this.emitLifecycle(this.onSegmentEnded, this.timedSegmentEvent(item));
+    } else {
+      this.emitLifecycle(this.onSegmentCancelled, this.segmentEvent(item));
+    }
+  }
+
+  private emitLifecycle<Event>(
+    callback: ((event: Event) => void) | undefined,
+    event: Event,
+  ): void {
+    try {
+      callback?.(event);
+    } catch {
+      // Consumer lifecycle hooks must not interrupt synthesis or playback.
+    }
   }
 
   private async prefetchNext(): Promise<void> {
@@ -796,6 +904,26 @@ export class TtsPlaybackManager {
     const update = () => {
       this.animationFrame = null;
       if (this.state === "playing" && this.analyser && this.samples) {
+        const item = this.current;
+        const contextTime = this.context?.currentTime;
+        if (
+          item
+          && !item.started
+          && item.startAt !== null
+          && typeof contextTime === "number"
+          && Number.isFinite(contextTime)
+          && contextTime >= item.startAt
+        ) {
+          item.started = true;
+          this.audioStartedAt = this.now();
+          this.onSpeakingChange?.(true);
+          this.emitLifecycle(this.onSegmentStarted, this.timedSegmentEvent(item));
+        }
+        if (!item?.started) {
+          this.emitSnapshot();
+          this.animationFrame = this.raf(update);
+          return;
+        }
         this.analyser.getFloatTimeDomainData(this.samples);
         this.currentRms = calculateRms(this.samples);
         this.peakRms = Math.max(this.peakRms, this.currentRms);
